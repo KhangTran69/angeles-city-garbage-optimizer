@@ -1,0 +1,25 @@
+{
+  "include": ["."],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    ".pytest_cache",
+    "cache",
+    "exports"
+  ],
+  "extraPaths": ["."],
+  "autoSearchPaths": false,
+  "typeCheckingMode": "basic",
+  "venvPath": "/Users/khangtran/Documents/app.py",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": ["."]
+    }
+  ],
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "reportUnusedImport": "warning",
+  "reportOptionalSubscript": "warning"
+}

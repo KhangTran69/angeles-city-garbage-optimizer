@@ -1,0 +1,19 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local environments and tool caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+# Generated runtime artifacts
+cache/
+logs/
+exports/
