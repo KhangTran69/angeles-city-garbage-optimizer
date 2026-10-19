@@ -2,11 +2,9 @@
 
 ## About
 
-The Angeles City Garbage Route Optimizer is an interactive Streamlit decision-support tool for exploring more efficient garbage collection routes across Angeles City, Philippines.
+An interactive Streamlit tool for optimizing garbage collection routes across Angeles City, Philippines. It approximates a **Capacitated Vehicle Routing Problem (CVRP)** using graph distances, a **Genetic Algorithm**, capacity-aware assignment, and **2-opt local search**. The dashboard compares routes, loads, schedules, operating metrics, and exports.
 
-It models the collection problem as an approximate **Capacitated Vehicle Routing Problem (CVRP)** and combines graph-based distance data, a single-objective **Genetic Algorithm**, capacity-aware route assignment, and **2-opt local search**. The dashboard lets users compare routes, inspect vehicle loads, view estimated schedules and operating metrics, and export dispatch-ready summaries.
-
-This project was developed as a **Thesis AL-1 research prototype** for route-planning analysis. It is intended for experimentation and operational planning support; waste volumes, baseline routes, travel times, and costs should be validated against official local records before real-world deployment.
+Built as a **Thesis AL-1 research prototype** for planning and experimentation. Validate operational data before deployment.
 
 **Built with:** Python, Streamlit, NetworkX, OSMnx, Folium, NumPy, SciPy, and OR-Tools.
 
