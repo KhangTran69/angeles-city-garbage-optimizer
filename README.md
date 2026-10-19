@@ -56,6 +56,8 @@ The app opens at `http://localhost:8501`.
 
 On first run, the app may download the Angeles City road network from OpenStreetMap and cache it in `data/`. If the road graph is unavailable, the optimizer falls back to Haversine distances so the app remains usable.
 
+The tactical map works without an API key using the bundled coordinates and local route data. To enable optional ORS road-curved routing, copy `.env.example` to `.env` and add an `ORS_API_KEY`. For Streamlit hosting, add the same value as a secret named `ORS_API_KEY`.
+
 ## Project Structure
 
 ```

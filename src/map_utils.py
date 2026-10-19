@@ -94,13 +94,11 @@ def fetch_ors_route(coords: List[List[float]], api_key: str) -> Optional[List[Li
             line_coords = data['features'][0]['geometry']['coordinates']
             # Reformat to [lat, lon] for Folium
             return [[c[1], c[0]] for c in line_coords]
-        elif response.status_code == 401:
-            log_api_call(logger, "ORS", "/geojson", False, "Unauthorized - check API key", response_time_ms)
-            st.error("🔑 ORS API Key Unauthorized. Check your .env credentials.")
+        elif response.status_code in (401, 403):
+            log_api_call(logger, "ORS", "/geojson", False, "Unauthorized or forbidden API key", response_time_ms)
             return None
         elif response.status_code == 429:
             log_api_call(logger, "ORS", "/geojson", False, "Rate limit exceeded", response_time_ms)
-            st.warning("⏳ ORS Rate Limit Reached. Falling back to local network approximation.")
             return None
         else:
             log_api_call(logger, "ORS", "/geojson", False, f"HTTP {response.status_code}", response_time_ms)
@@ -108,7 +106,6 @@ def fetch_ors_route(coords: List[List[float]], api_key: str) -> Optional[List[Li
     except requests.Timeout:
         response_time_ms = (time.time() - start_time) * 1000
         log_api_call(logger, "ORS", "/geojson", False, "Timeout", response_time_ms)
-        st.warning("⏱️ ORS request timed out. Using straight-line fallback.")
         return None
     except Exception as e:
         response_time_ms = (time.time() - start_time) * 1000

@@ -4,20 +4,42 @@ All tunable parameters, colors, and default values live here.
 """
 import os
 
-def load_env(path=".env"):
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_env(path=None):
     """Bespoke pure-Python .env loader to eliminate external dependencies."""
+    path = path or os.path.join(PROJECT_ROOT, ".env")
     if os.path.exists(path):
         with open(path, "r") as f:
             for line in f:
                 if "=" in line and not line.strip().startswith("#"):
                     k, v = line.strip().split("=", 1)
-                    os.environ[k.strip()] = v.strip()
+                    if v.strip():
+                        os.environ.setdefault(k.strip(), v.strip())
+
+
+def get_config_value(name: str) -> str:
+    """Read a configuration value from the environment or Streamlit secrets."""
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+
+    try:
+        from streamlit.runtime import exists as streamlit_runtime_exists
+
+        if not streamlit_runtime_exists():
+            return ""
+        import streamlit as st
+
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
 
 # Initialize environment for AL-1 Optimization
 load_env()
 
 # ── Path Configuration ────────────────────────────────────────────────────────
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 GRAPH_PATH = os.path.join(DATA_DIR, "angeles_city_network.graphml")
 DISTANCE_MATRIX_PATH = os.path.join(DATA_DIR, "distance_matrix.npy")
@@ -31,7 +53,8 @@ COLLECTION_DAYS = 312
 CO2_PER_LITER_DIESEL = 2.68
 
 # ── Routing Parameters (ORS) ───────────────────────────────────────────────────
-ORS_API_KEY = os.getenv("ORS_API_KEY", "")
+ORS_API_KEY = get_config_value("ORS_API_KEY")
+GOOGLE_MAPS_API_KEY = get_config_value("GOOGLE_MAPS_API_KEY")
 ORS_ROUTING_PROFILE = "driving-hgv"
 ORS_BASE_URL = f"https://api.openrouteservice.org/v2/directions/{ORS_ROUTING_PROFILE}"
 

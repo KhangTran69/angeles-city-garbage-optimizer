@@ -327,7 +327,7 @@ with st.sidebar:
             )
         else:
             st.markdown(
-                "<div style='font-size:0.75rem; color:#ef9a9a; margin-bottom:10px;'>🔴 ORS KEY NOT FOUND (.env)</div>",
+                "<div style='font-size:0.75rem; color:#69f0ae; margin-bottom:10px;'>🟢 LOCAL MAP MODE (ORS KEY OPTIONAL)</div>",
                 unsafe_allow_html=True,
             )
 
@@ -782,7 +782,7 @@ with t4:
                 )
             else:
                 st.markdown(
-                    "<div style='font-size:0.65rem; color:#ffb74d; margin-bottom:10px;'>🟠 STRAIGHT-LINE FALLBACK (NO API KEY)</div>",
+                    "<div style='font-size:0.65rem; color:#69f0ae; margin-bottom:10px;'>🟢 LOCAL MAP ACTIVE (ORS KEY OPTIONAL)</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -1414,8 +1414,7 @@ with t8:
             """<div class='section-title'>🔍 GOOGLE MAPS API VERIFICATION</div>""", unsafe_allow_html=True
         )
         
-        from src.config import ORS_API_KEY
-        google_api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
+        google_api_key = GOOGLE_MAPS_API_KEY
         
         if not google_api_key or "your_google_maps" in google_api_key:
             st.warning("⚠️ Google Maps API Key not found in .env. Please add `GOOGLE_MAPS_API_KEY` to enable verification.")
