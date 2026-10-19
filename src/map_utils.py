@@ -14,7 +14,7 @@ from src.data import DEPOT_COORD, BARANGAY_COORDS, DEPOT, GOOGLE_ROUTES
 from src.config import VEHICLE_COLORS, ORS_BASE_URL
 from src.logger import log_api_call, logger
 
-MAP_CACHE_VERSION = "2026-04-21-map-cache-v3"
+MAP_CACHE_VERSION = "2026-10-19-map-cache-v4"
 FULL_FLEET_MAX_ROUTE_POINTS = 120
 
 
@@ -189,8 +189,8 @@ def build_folium_route_map(
     m = folium.Map(
         location=DEPOT_COORD, 
         zoom_start=13, 
-        tiles="CartoDB dark_matter", 
-        attribution_control=False,
+        tiles="OpenStreetMap",
+        attribution_control=True,
         control_scale=True,
         prefer_canvas=is_full_fleet_view,
     )
