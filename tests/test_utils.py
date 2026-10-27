@@ -9,8 +9,8 @@ def test_haversine_same_point():
 def test_get_route_load():
     """Verify total load calculation."""
     route = ["Agapito del Rosario", "Amsic"]
-    # 850 + 1250 = 2100
-    assert get_route_load(route) == 2100
+    # 2240 + 3300 = 5540, from the configured waste table.
+    assert get_route_load(route) == 5540
 
 def test_estimate_duration():
     """Verify duration formula."""

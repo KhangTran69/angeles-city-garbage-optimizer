@@ -6,7 +6,6 @@ import os
 import random
 import hashlib
 import json
-from math import ceil
 import numpy as np
 import streamlit as st
 from typing import List, Tuple, Dict, Any, Optional
@@ -18,7 +17,7 @@ from src.config import (
 from src.data import BARANGAYS, DEPOT, BARANGAY_WASTE_KG
 from src.utils import (
     haversine, get_coord, route_distance_road, 
-    get_route_load, two_opt
+    two_opt
 )
 
 def _build_point_index() -> Dict[str, int]:
@@ -256,7 +255,6 @@ def run_ga(
     if dist_list is None:
         # Emergency recovery: Build a haversine list if no matrix is available
         points = [DEPOT] + BARANGAYS
-        n = len(points)
         dist_list = [[haversine(get_coord(p1), get_coord(p2)) for p2 in points] for p1 in points]
         pt_idx = {p: i for i, p in enumerate(points)}
     else:
@@ -369,7 +367,16 @@ def run_ga(
     final_routes = [two_opt(route, road_graph, distance_matrix, point_to_index) for route in final_routes_names]
     
     # Correct distance calculation with road network
-    final_dists = [route_distance_road(r, road_graph, distance_matrix, point_to_index) for r in final_routes]
+    final_dists = []
+    for route in final_routes:
+        route_key = tuple(route)
+        if route_distance_cache is not None and route_key in route_distance_cache:
+            final_dists.append(route_distance_cache[route_key])
+            continue
+        distance = route_distance_road(route, road_graph, distance_matrix, point_to_index)
+        if route_distance_cache is not None:
+            route_distance_cache[route_key] = distance
+        final_dists.append(distance)
     return final_routes, final_dists, float(sum(final_dists)), history
 
 

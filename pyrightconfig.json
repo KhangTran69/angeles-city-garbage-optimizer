@@ -4,14 +4,14 @@
     "**/node_modules",
     "**/__pycache__",
     ".pytest_cache",
+    ".venv",
+    "**/.venv*",
     "cache",
     "exports"
   ],
   "extraPaths": ["."],
   "autoSearchPaths": false,
   "typeCheckingMode": "basic",
-  "venvPath": "/Users/khangtran/Documents/app.py",
-  "venv": ".venv",
   "executionEnvironments": [
     {
       "root": ".",

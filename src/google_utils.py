@@ -3,10 +3,8 @@ Google Maps Directions API utilities for Angeles City Garbage Route Optimizer.
 Provides high-fidelity route verification against Google's routing engine.
 """
 import requests
-import json
-import os
 from typing import List, Tuple, Dict, Any, Optional
-from src.logger import logger, log_api_call
+from src.logger import logger
 
 GOOGLE_MAPS_BASE_URL = "https://maps.googleapis.com/maps/api/directions/json"
 

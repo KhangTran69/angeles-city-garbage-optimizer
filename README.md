@@ -134,17 +134,22 @@ angeles-garbage-optimizer/
 
 ## Verification
 
+GitHub Actions runs these on every push and pull request:
+
 ```bash
 python -m pytest -q
-python -m py_compile app.py src/*.py tests/*.py
+python -m ruff check src tests --select E9,F
 ```
 
-Optional static checks:
+Optional static checks, advisory until the existing backlog is cleared:
 
 ```bash
-pyright
-ruff check .
+python -m basedpyright src
 ```
+
+`ruff.toml` still selects `E`, `F`, `I`, and `UP` for local use, but the CI gate
+is narrower on purpose: the repository has not yet been cleaned up to that
+standard. Tighten `--select` in `.github/workflows/ci.yml` as the backlog shrinks.
 
 ## License
 

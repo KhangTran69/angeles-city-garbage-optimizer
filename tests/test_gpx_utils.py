@@ -14,8 +14,6 @@ from src.gpx_utils import (
     compute_route_metrics,
     compare_routes,
     compute_deviation_score,
-    RouteMetrics,
-    RouteComparison,
     FUEL_PER_KM,
     CO2_PER_LITER_DIESEL,
 )
