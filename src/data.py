@@ -8,7 +8,7 @@ import math
 import os
 from typing import Dict, Tuple
 
-from src.config import COORDS_PATH, DISTANCE_MATRIX_PATH, OSM_BBOX
+from src.config import COORDS_PATH, OSM_BBOX
 
 # ── Official 33 Barangays of Angeles City ──────────────────────────────────────
 BARANGAYS = [
@@ -151,12 +151,8 @@ def save_barangay_coords(
 
     BARANGAY_COORDS.clear()
     BARANGAY_COORDS.update(cleaned_coords)
-    # The saved matrix is derived from these coordinates; force it to rebuild.
-    for stale_file in (DISTANCE_MATRIX_PATH, DISTANCE_MATRIX_PATH + ".json"):
-        try:
-            os.remove(stale_file)
-        except FileNotFoundError:
-            pass
+    # Any saved distance matrix is now stale; its coordinate signature no longer
+    # matches, so load_cached_distance_matrix() rebuilds it on the next run.
     return dict(cleaned_coords)
 
 

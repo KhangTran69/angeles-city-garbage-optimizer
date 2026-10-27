@@ -147,7 +147,6 @@ def render_research_baseline_comparison(
             vehicle_capacity,
         )
     
-    ga_vs_greedy = round(((greedy_total - ga_total) / greedy_total) * 100, 1) if greedy_total > 0 else 0
     ga_vs_gso = round(((gso_total - ga_total) / gso_total) * 100, 1) if gso_total > 0 else 0
 
     if total_demand > fleet_capacity:

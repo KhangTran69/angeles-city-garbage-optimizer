@@ -6,8 +6,7 @@ import gpxpy
 import gpxpy.gpx
 from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-import numpy as np
+from datetime import datetime
 from pathlib import Path
 import json
 

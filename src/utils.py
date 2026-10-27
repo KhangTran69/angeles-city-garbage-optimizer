@@ -3,7 +3,7 @@ Mathematical and routing utility functions for Angeles City Garbage Route Optimi
 Includes Haversine distance, road distance calculators, and metrics formatting.
 """
 import math
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Optional
 from src.data import BARANGAY_COORDS, DEPOT_COORD, DEPOT, BARANGAY_WASTE_KG
 
 def haversine(coord1: Tuple[float, float], coord2: Tuple[float, float]) -> float:

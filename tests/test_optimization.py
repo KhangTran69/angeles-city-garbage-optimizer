@@ -1,7 +1,8 @@
+import json
+
 import numpy as np
 
 from src.optimization import (
-    build_seed_chromosomes,
     decode_chromosome,
     evaluate_manual_baseline,
     greedy_baseline,
@@ -41,14 +42,26 @@ def test_greedy_baseline_custom_waste():
 
 def test_decode_chromosome_respects_capacity_when_possible():
     """The decoder should keep routes within capacity when a feasible split exists."""
-    chromosome = ["Amsic", "Anunas", "Balibago"]
-    waste_dict = {"Amsic": 1000, "Anunas": 900, "Balibago": 1100}
+    waste_list = [1000, 900, 1100]
+    dist_matrix = [
+        [0.0, 1.0, 1.0, 1.0],
+        [1.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0, 0.0],
+    ]
 
-    routes, _, _ = decode_chromosome(chromosome, n_vehicles=2, vehicle_capacity_kg=2000, waste_dict=waste_dict)
+    routes, _, loads = decode_chromosome(
+        [0, 1, 2],
+        n_vehicles=2,
+        vehicle_capacity_kg=2000,
+        waste_list=waste_list,
+        dist_matrix=dist_matrix,
+        depot_idx=3,
+    )
 
     flattened = [stop for route in routes for stop in route]
-    assert sorted(flattened) == sorted(chromosome)
-    assert all(get_route_load(route, waste_dict) <= 2000 for route in routes if route)
+    assert sorted(flattened) == [0, 1, 2]
+    assert all(load <= 2000 for route, load in zip(routes, loads) if route)
 
 
 def test_run_ga_returns_complete_visit_set():
@@ -116,12 +129,22 @@ def test_run_ga_single_vehicle_stays_complete():
 
 def test_decode_chromosome_handles_impossible_capacity():
     """Decoder should still assign all stops even if every route must overload."""
-    chromosome = ["Amsic", "Anunas"]
-    waste_dict = {"Amsic": 6000, "Anunas": 7000}
+    dist_matrix = [
+        [0.0, 1.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0],
+    ]
 
-    routes, _, _ = decode_chromosome(chromosome, n_vehicles=1, vehicle_capacity_kg=1000, waste_dict=waste_dict)
+    routes, _, _ = decode_chromosome(
+        [0, 1],
+        n_vehicles=1,
+        vehicle_capacity_kg=1000,
+        waste_list=[6000, 7000],
+        dist_matrix=dist_matrix,
+        depot_idx=2,
+    )
 
-    assert routes == [["Amsic", "Anunas"]]
+    assert routes == [[0, 1]]
 
 
 def test_run_benchmark_is_reproducible():
@@ -164,7 +187,8 @@ def test_load_cached_distance_matrix_uses_saved_matrix(tmp_path, monkeypatch):
     matrix_path = tmp_path / "distance_matrix.npy"
     expected = np.zeros((34, 34), dtype=np.float32)
     np.save(matrix_path, expected)
-    load_cached_distance_matrix.clear()
+    with open(str(matrix_path) + ".json", "w", encoding="utf-8") as metadata:
+        json.dump({"coordinate_signature": optimization_module._coordinate_signature()}, metadata)
     monkeypatch.setattr(optimization_module, "DISTANCE_MATRIX_PATH", str(matrix_path))
 
     loaded, point_to_idx = load_cached_distance_matrix()
@@ -173,6 +197,19 @@ def test_load_cached_distance_matrix_uses_saved_matrix(tmp_path, monkeypatch):
     assert loaded.shape == expected.shape
     assert point_to_idx["Angeles City Transfer Station"] == 0
     assert point_to_idx["Virgen Delos Remedios"] == 33
+
+
+def test_load_cached_distance_matrix_rejects_stale_coordinate_signature(tmp_path, monkeypatch):
+    """A matrix saved for older coordinates must not be reused."""
+    matrix_path = tmp_path / "distance_matrix.npy"
+    np.save(matrix_path, np.zeros((34, 34), dtype=np.float32))
+    with open(str(matrix_path) + ".json", "w", encoding="utf-8") as metadata:
+        json.dump({"coordinate_signature": "stale"}, metadata)
+    monkeypatch.setattr(optimization_module, "DISTANCE_MATRIX_PATH", str(matrix_path))
+
+    loaded, _ = load_cached_distance_matrix()
+
+    assert loaded is None
 
 
 def test_run_benchmark_reuses_seed_chromosomes(monkeypatch):
@@ -201,15 +238,15 @@ def test_run_ga_caches_duplicate_chromosome_fitness(monkeypatch):
     selected = ["Amsic", "Anunas", "Balibago"]
     fitness_calls = {"decode": 0}
 
-    def fake_decode(chromosome, n_vehicles, vehicle_capacity_kg, waste_dict=None):
+    def fake_decode(chromosome, n_vehicles, vehicle_capacity_kg, waste_list, dist_matrix, depot_idx):
         fitness_calls["decode"] += 1
-        return [chromosome[:]], [float(len(chromosome))], [sum(waste_dict.values()) if waste_dict else 0]
+        return [chromosome[:]], [float(len(chromosome))], [sum(waste_list)]
 
     def fake_distance(route, road_graph, distance_matrix, point_to_index):
         return float(len(route))
 
     def fake_sample(self, population, k):
-        return selected[:]
+        return list(population)[:k]
 
     monkeypatch.setattr(optimization_module, "decode_chromosome", fake_decode)
     monkeypatch.setattr(optimization_module, "route_distance_road", fake_distance)
@@ -238,7 +275,7 @@ def test_run_benchmark_reuses_route_distance_cache_across_runs(monkeypatch):
     selected = ["Amsic", "Anunas", "Balibago"]
     route_distance_calls = {"count": 0}
 
-    def fake_decode(chromosome, n_vehicles, vehicle_capacity_kg, waste_dict=None, **kwargs):
+    def fake_decode(chromosome, n_vehicles, vehicle_capacity_kg, waste_list, dist_matrix, depot_idx):
         return [chromosome[:]], [3.0], [0]
 
     def fake_distance(route, road_graph, distance_matrix, point_to_index):
@@ -246,7 +283,7 @@ def test_run_benchmark_reuses_route_distance_cache_across_runs(monkeypatch):
         return float(len(route))
 
     def fake_sample(self, population, k):
-        return selected[:]
+        return list(population)[:k]
 
     monkeypatch.setattr(optimization_module, "decode_chromosome", fake_decode)
     monkeypatch.setattr(optimization_module, "route_distance_road", fake_distance)

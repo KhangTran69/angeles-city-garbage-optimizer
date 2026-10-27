@@ -5,7 +5,7 @@ Initializes default values and handles performance history.
 
 import streamlit as st
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 
 def init_session_state():

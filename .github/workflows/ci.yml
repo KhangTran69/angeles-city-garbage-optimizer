@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      # Step 1 of a ratchet: syntax errors, undefined names, unused code.
+      # The wider E/F/I/UP selection in ruff.toml is not yet clean, so the gate
+      # stays narrow until the existing backlog is burned down.
+      - name: Lint (errors and undefined names)
+        run: python -m ruff check src tests --select E9,F --output-format=github
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      # Advisory until the existing type errors are resolved; does not fail the build.
+      - name: Type check (advisory)
+        continue-on-error: true
+        run: python -m basedpyright src
