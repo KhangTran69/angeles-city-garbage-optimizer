@@ -4,10 +4,11 @@ Barangays, coordinates, waste estimates, and depot location.
 """
 
 import json
+import math
 import os
 from typing import Dict, Tuple
 
-from src.config import COORDS_PATH
+from src.config import COORDS_PATH, DISTANCE_MATRIX_PATH, OSM_BBOX
 
 # ── Official 33 Barangays of Angeles City ──────────────────────────────────────
 BARANGAYS = [
@@ -107,6 +108,7 @@ def load_barangay_coords(path: str = COORDS_PATH) -> Dict[str, Tuple[float, floa
         return dict(DEFAULT_BARANGAY_COORDS)
 
     coords: Dict[str, Tuple[float, float]] = {}
+    south, north, west, east = OSM_BBOX
     for barangay in BARANGAYS:
         raw_value = raw_data.get(barangay)
         if (
@@ -114,7 +116,14 @@ def load_barangay_coords(path: str = COORDS_PATH) -> Dict[str, Tuple[float, floa
             and len(raw_value) == 2
             and all(isinstance(component, (int, float)) for component in raw_value)
         ):
-            coords[barangay] = (float(raw_value[0]), float(raw_value[1]))
+            lat, lon = float(raw_value[0]), float(raw_value[1])
+            if (
+                math.isfinite(lat) and math.isfinite(lon)
+                and south <= lat <= north and west <= lon <= east
+            ):
+                coords[barangay] = (lat, lon)
+            else:
+                coords[barangay] = DEFAULT_BARANGAY_COORDS[barangay]
         else:
             coords[barangay] = DEFAULT_BARANGAY_COORDS[barangay]
     return coords
@@ -126,9 +135,15 @@ def save_barangay_coords(
 ) -> Dict[str, Tuple[float, float]]:
     """Persist validated coordinates to disk and refresh the in-memory mapping."""
     cleaned_coords: Dict[str, Tuple[float, float]] = {}
+    south, north, west, east = OSM_BBOX
     for barangay in BARANGAYS:
         lat, lon = coords.get(barangay, DEFAULT_BARANGAY_COORDS[barangay])
-        cleaned_coords[barangay] = (float(lat), float(lon))
+        lat, lon = float(lat), float(lon)
+        if not math.isfinite(lat) or not math.isfinite(lon):
+            raise ValueError(f"Coordinates for {barangay} must be finite numbers.")
+        if not south <= lat <= north or not west <= lon <= east:
+            raise ValueError(f"Coordinates for {barangay} fall outside the configured city bounds.")
+        cleaned_coords[barangay] = (lat, lon)
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
@@ -136,6 +151,12 @@ def save_barangay_coords(
 
     BARANGAY_COORDS.clear()
     BARANGAY_COORDS.update(cleaned_coords)
+    # The saved matrix is derived from these coordinates; force it to rebuild.
+    for stale_file in (DISTANCE_MATRIX_PATH, DISTANCE_MATRIX_PATH + ".json"):
+        try:
+            os.remove(stale_file)
+        except FileNotFoundError:
+            pass
     return dict(cleaned_coords)
 
 

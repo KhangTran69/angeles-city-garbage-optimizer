@@ -4,6 +4,8 @@ Optimization Recovery: GA Seeding + Unified Road Physics.
 """
 import os
 import random
+import hashlib
+import json
 from math import ceil
 import numpy as np
 import streamlit as st
@@ -24,7 +26,19 @@ def _build_point_index() -> Dict[str, int]:
     return {point: idx for idx, point in enumerate([DEPOT] + BARANGAYS)}
 
 
-@st.cache_data(show_spinner=False)
+def _coordinate_signature() -> str:
+    points = [DEPOT] + BARANGAYS
+    payload = [(point, get_coord(point)) for point in points]
+    return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
+
+
+def _save_distance_matrix(matrix: np.ndarray) -> None:
+    os.makedirs(os.path.dirname(DISTANCE_MATRIX_PATH), exist_ok=True)
+    np.save(DISTANCE_MATRIX_PATH, matrix)
+    with open(DISTANCE_MATRIX_PATH + ".json", "w", encoding="utf-8") as metadata:
+        json.dump({"coordinate_signature": _coordinate_signature()}, metadata)
+
+
 def load_cached_distance_matrix() -> Tuple[Optional[np.ndarray], Dict[str, int]]:
     """Load the persisted distance matrix without touching the road graph."""
     point_to_idx = _build_point_index()
@@ -33,11 +47,19 @@ def load_cached_distance_matrix() -> Tuple[Optional[np.ndarray], Dict[str, int]]
         return None, point_to_idx
 
     try:
+        with open(DISTANCE_MATRIX_PATH + ".json", encoding="utf-8") as metadata_file:
+            metadata = json.load(metadata_file)
+        if metadata.get("coordinate_signature") != _coordinate_signature():
+            return None, point_to_idx
         dist_matrix = np.load(DISTANCE_MATRIX_PATH)
     except Exception:
         return None, point_to_idx
 
-    if dist_matrix.shape != (n_points, n_points):
+    if (
+        dist_matrix.shape != (n_points, n_points)
+        or not np.isfinite(dist_matrix).all()
+        or (dist_matrix < 0).any()
+    ):
         return None, point_to_idx
     return dist_matrix, point_to_idx
 
@@ -160,7 +182,6 @@ def load_road_network() -> Optional[Any]:
         return graph
     except Exception: return None
 
-@st.cache_data
 def get_distance_matrix(_graph) -> Tuple[np.ndarray, Dict[str, int]]:
     import networkx as nx
     import osmnx as ox
@@ -182,8 +203,7 @@ def get_distance_matrix(_graph) -> Tuple[np.ndarray, Dict[str, int]]:
         matrix = fetch_ors_matrix([list(c) for c in coords], ORS_API_KEY)
         if matrix:
             dist_matrix = np.array(matrix, dtype=np.float32) / 1000.0
-            os.makedirs(os.path.dirname(DISTANCE_MATRIX_PATH), exist_ok=True)
-            np.save(DISTANCE_MATRIX_PATH, dist_matrix)
+            _save_distance_matrix(dist_matrix)
             return dist_matrix, point_to_idx
         else:
             st.warning("⚠️ ORS Matrix API failed. Falling back to local road network approximation.")
@@ -205,10 +225,14 @@ def get_distance_matrix(_graph) -> Tuple[np.ndarray, Dict[str, int]]:
         for j, p2 in enumerate(points):
             if i == j: continue
             d = found_distances.get(node_map[p1], {}).get(node_map[p2])
-            dist_matrix[i, j] = (d / 1000.0) if d is not None else haversine(get_coord(p1), get_coord(p2))
+            if d is None:
+                raise ValueError(
+                    f"No drivable road path exists between {p1!r} and {p2!r}; "
+                    "check the road graph or coordinates. Straight-line distance was not substituted."
+                )
+            dist_matrix[i, j] = d / 1000.0
     matrix_prog.empty()
-    os.makedirs(os.path.dirname(DISTANCE_MATRIX_PATH), exist_ok=True)
-    np.save(DISTANCE_MATRIX_PATH, dist_matrix)
+    _save_distance_matrix(dist_matrix)
     return dist_matrix, point_to_idx
 
 def run_ga(
