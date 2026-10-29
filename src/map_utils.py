@@ -220,11 +220,11 @@ def build_folium_route_map(
         group = folium.FeatureGroup(name=f"🚛 Vehicle {i+1} Dispatch")
         
         full_stops = [DEPOT] + route + [DEPOT]
-        base_coords = [BARANGAY_COORDS.get(s, DEPOT_COORD) if s != DEPOT else DEPOT_COORD for s in full_stops]
+        base_coords = [list(BARANGAY_COORDS.get(s, DEPOT_COORD) if s != DEPOT else DEPOT_COORD) for s in full_stops]
 
         # Override the base plotting path with the realistic ground-truth maps route (Truck 1-5).
         if i < len(GOOGLE_ROUTES):
-            base_coords = GOOGLE_ROUTES[i]
+            base_coords = [list(coord) for coord in GOOGLE_ROUTES[i]]
         # ---------------------------------
 
         # 🚀 Tiered Routing Logic
@@ -505,7 +505,7 @@ def compute_stop_schedule(
     # 🎯 GROUND-TRUTH ETA Logic (Truck 1-5)
     # If this is an override vehicle, we calculate distance by snapping to the Google path
     is_gt = vehicle_idx is not None and vehicle_idx < len(GOOGLE_ROUTES)
-    gt_path = GOOGLE_ROUTES[vehicle_idx] if is_gt else []
+    gt_path = GOOGLE_ROUTES[vehicle_idx] if vehicle_idx is not None and is_gt else []
 
     for i, stop in enumerate(route):
         d = 0.0

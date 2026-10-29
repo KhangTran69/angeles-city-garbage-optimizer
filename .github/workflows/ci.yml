@@ -39,7 +39,5 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-      # Advisory until the existing type errors are resolved; does not fail the build.
-      - name: Type check (advisory)
-        continue-on-error: true
+      - name: Type check
         run: python -m basedpyright src

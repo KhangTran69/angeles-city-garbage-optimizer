@@ -176,7 +176,7 @@ def load_road_network() -> Optional[Any]:
         try: return ox.load_graphml(GRAPH_PATH)
         except Exception: pass
     try:
-        graph = ox.project_graph(ox.graph_from_bbox(*OSM_BBOX, network_type="drive"))
+        graph = ox.project_graph(ox.graph_from_bbox(OSM_BBOX, network_type="drive"))
         ox.save_graphml(ox.routing.add_edge_travel_times(ox.routing.add_edge_speeds(graph)), GRAPH_PATH)
         return graph
     except Exception: return None
@@ -295,7 +295,7 @@ def run_ga(
         if len(p1) < 2 or rng.random() > crossover_rate:
             return p1[:]
         a, b = sorted(rng.sample(range(len(p1)), 2))
-        child = [None] * len(p1)
+        child: List[Optional[int]] = [None] * len(p1)
         child[a:b] = p1[a:b]
         child_set = set(p1[a:b])
         p2_f = [x for x in p2 if x not in child_set]
