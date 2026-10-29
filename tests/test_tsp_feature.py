@@ -7,6 +7,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import src.tsp_feature as tsp_feature
+
 from src.tsp_feature import (
     _build_bbox_graph_key,
     _coords_within_bounds,
@@ -214,4 +216,10 @@ def test_waypoint_tsp_covers_each_placemark_once():
     assert len(order) == 3
     assert set(order) == {0, 1, 2}
     assert calculate_order_distance_km(matrix, order) > 0
+
+
+def test_closed_tsp_explains_missing_solver(monkeypatch):
+    monkeypatch.setattr(tsp_feature, "pywrapcp", None)
+    with pytest.raises(RuntimeError, match="OR-Tools is required"):
+        solve_closed_tsp([[0, 1], [1, 0]])
 
