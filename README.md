@@ -99,6 +99,18 @@ angeles-garbage-optimizer/
 6. **Export** — ZIP dispatch package with JSON, route summaries, and per-vehicle CSVs.
 7. **Benchmark** — run repeatable multi-seed comparisons for stability checks.
 
+### Reproduce the fixed route comparison
+
+Run `python -m src.benchmark` from the repository root to compare three fixed
+GA seeds (42–44) against a capacity-aware greedy baseline on the same six
+barangays, vehicle count, capacity, built-in default coordinates, and Haversine
+distance model. Saved coordinate edits and live routing are ignored. The JSON
+report includes route distance and feasibility (each selected barangay exactly
+once and every route within capacity). Waste inputs are
+illustrative estimates and distances are straight-line approximations; this is
+a reproducible algorithm comparison, not a field-validated operations result.
+Use `python -m src.benchmark --json-out report.json` to save the report.
+
 ## GA Parameters
 
 | Parameter | Default | Description |
