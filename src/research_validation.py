@@ -252,7 +252,7 @@ def run_statistical_verification(
     ga_mean = round(np.mean(ga_distances), 2)
     mean_saving = round(gso_ref - ga_mean, 2)
     pct_saving = round(mean_saving / gso_ref * 100, 1) if gso_ref > 0 else 0
-    is_sig = p_value < 0.05
+    is_sig = bool(np.asarray(p_value, dtype=float).item() < 0.05)
 
     if is_sig:
         st.success(f"✅ **Significant** (p = {p_value:.2f} < 0.05). GA saved **{mean_saving:.2f} km ({pct_saving:.2f}%)** on average.")

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import gpxpy
+from gpxpy.gpx import GPX
 import pandas as pd
 import streamlit as st
 from geopy.distance import great_circle
@@ -235,7 +236,7 @@ def _build_point_records(
     return point_records
 
 
-def extract_gpx_point_records(gpx: gpxpy.gpx.GPX) -> tuple[list[PointRecord], str]:
+def extract_gpx_point_records(gpx: GPX) -> tuple[list[PointRecord], str]:
     """Extract points from tracks first, then routes, then waypoints."""
     track_points: list[Any] = []
     for track in gpx.tracks:
@@ -528,6 +529,8 @@ def solve_closed_tsp(distance_matrix_meters: Sequence[Sequence[int]]) -> list[in
         return []
     if node_count == 1:
         return [0, 0]
+    if pywrapcp is None or routing_enums_pb2 is None:
+        raise RuntimeError("OR-Tools is required to solve a TSP tour")
 
     manager = pywrapcp.RoutingIndexManager(node_count, 1, 0)
     routing = pywrapcp.RoutingModel(manager)
@@ -578,7 +581,7 @@ def build_optimized_route_polyline(
             # fetch_ors_route handles HGV profile and truck dimensions
             route = fetch_ors_route([list(c) for c in ordered_coords], ORS_API_KEY)
             if route:
-                return [tuple(c) for c in route]
+                return [(float(c[0]), float(c[1])) for c in route]
         
         # Fallback to OSMnx road routing if ORS fails but graph is available
         if graph_key:
@@ -931,7 +934,7 @@ def _integrate_mission_point_tsp_feature() -> None:
 # --- Waypoint GPX + RDP + TSP workflow ---------------------------------------
 
 def extract_track_and_waypoint_records(
-    gpx: gpxpy.gpx.GPX,
+    gpx: GPX,
 ) -> tuple[list[PointRecord], list[WaypointNode], str]:
     """Extract route track points and explicit GPX waypoints from one GPX file."""
     track_points: list[Any] = []

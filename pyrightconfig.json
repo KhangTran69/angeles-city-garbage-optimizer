@@ -10,7 +10,6 @@
     "exports"
   ],
   "extraPaths": ["."],
-  "autoSearchPaths": false,
   "typeCheckingMode": "basic",
   "executionEnvironments": [
     {

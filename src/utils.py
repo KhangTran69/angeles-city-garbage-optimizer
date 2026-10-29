@@ -3,6 +3,7 @@ Mathematical and routing utility functions for Angeles City Garbage Route Optimi
 Includes Haversine distance, road distance calculators, and metrics formatting.
 """
 import math
+import numpy as np
 from typing import List, Tuple, Dict, Optional
 from src.data import BARANGAY_COORDS, DEPOT_COORD, DEPOT, BARANGAY_WASTE_KG
 
@@ -28,7 +29,7 @@ def get_coord(point_name: str) -> Tuple[float, float]:
 def route_distance_road(
     route: List[str], 
     road_graph, 
-    distance_matrix: Optional[List[List[float]]], 
+    distance_matrix: Optional[List[List[float]] | np.ndarray],
     point_to_index: Optional[Dict[str, int]]
 ) -> float:
     """
@@ -92,7 +93,7 @@ def estimate_route_duration_minutes(distance_km: float, n_stops: int) -> float:
 def two_opt(
     route: List[str], 
     road_graph, 
-    distance_matrix: Optional[List[List[float]]], 
+    distance_matrix: Optional[List[List[float]] | np.ndarray],
     point_to_index: Optional[Dict[str, int]]
 ) -> List[str]:
     """Basic 2-opt local search to refine an individual vehicle's route."""
