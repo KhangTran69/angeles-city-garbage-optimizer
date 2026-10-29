@@ -106,7 +106,9 @@ GA seeds (42–44) against a capacity-aware greedy baseline on the same six
 barangays, vehicle count, capacity, built-in default coordinates, and Haversine
 distance model. Saved coordinate edits and live routing are ignored. The JSON
 report includes route distance and feasibility (each selected barangay exactly
-once and every route within capacity). Waste inputs are
+once and every route within capacity), per-seed runtime, distance range and
+population standard deviation, and Python/NumPy versions. Runtime varies by
+machine and is reported for context, not as a performance guarantee. Waste inputs are
 illustrative estimates and distances are straight-line approximations; this is
 a reproducible algorithm comparison, not a field-validated operations result.
 Use `python -m src.benchmark --json-out report.json` to save the report.
