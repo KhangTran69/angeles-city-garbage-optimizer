@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import statistics
+import time
 from collections import Counter
 from typing import Any
 
@@ -67,6 +70,7 @@ def run_fixed_benchmark() -> dict[str, Any]:
 
     runs: list[dict[str, Any]] = []
     for seed in BENCHMARK_SEEDS:
+        started = time.perf_counter()
         routes, _, total_distance, _ = run_ga(
             list(BENCHMARK_STOPS),
             n_vehicles=BENCHMARK_VEHICLES,
@@ -82,10 +86,12 @@ def run_fixed_benchmark() -> dict[str, Any]:
             random_seed=seed,
         )
         feasibility = _route_feasibility(routes)
+        runtime_seconds = time.perf_counter() - started
         runs.append(
             {
                 "seed": seed,
                 "route_distance_km": round(float(total_distance), 2),
+                "runtime_seconds": round(runtime_seconds, 6),
                 "feasible": (
                     feasibility["all_selected_stops_once"]
                     and feasibility["all_routes_within_capacity"]
@@ -96,6 +102,7 @@ def run_fixed_benchmark() -> dict[str, Any]:
         )
 
     distances = [run["route_distance_km"] for run in runs]
+    runtimes = [run["runtime_seconds"] for run in runs]
     baseline_feasible = (
         baseline_feasibility["all_selected_stops_once"]
         and baseline_feasibility["all_routes_within_capacity"]
@@ -103,6 +110,10 @@ def run_fixed_benchmark() -> dict[str, Any]:
     )
     return {
         "schema_version": 1,
+        "runtime_environment": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+        },
         "benchmark": "fixed-seed GA vs. greedy baseline",
         "distance_model": (
             "Haversine from built-in default coordinates; saved coordinate edits and live routing are ignored"
@@ -127,6 +138,9 @@ def run_fixed_benchmark() -> dict[str, Any]:
             "name": "genetic algorithm with capacity-aware decoding and 2-opt",
             "runs": runs,
             "mean_route_distance_km": round(sum(distances) / len(distances), 2),
+            "distance_stddev_km": round(statistics.pstdev(distances), 2),
+            "distance_range_km": [min(distances), max(distances)],
+            "mean_runtime_seconds": round(statistics.mean(runtimes), 6),
             "best_route_distance_km": min(distances),
             "all_runs_feasible": all(run["feasible"] for run in runs),
         },
