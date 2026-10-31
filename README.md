@@ -131,6 +131,7 @@ Use `python -m src.benchmark --json-out report.json` to save the report.
 - ETA values are estimated from configured average speed and service-time assumptions, not live traffic feeds.
 - OpenRouteService routing is optional for map visualization; optimization primarily uses the cached OSMnx graph or Haversine fallback.
 - Single runs can be made reproducible by reusing the same random seed; benchmark mode compares sequential seeds starting from a fixed base seed.
+- Benchmark results include per-seed runtime, route feasibility, and timeout status, plus mean runtime, feasibility rate, and timeout rate. Feasibility means every selected barangay appears exactly once and each route stays within vehicle capacity. An optional `timeout_seconds` budget is cooperative: the solver checks between generations, then returns its best route so far; the active generation may exceed the budget. Timed-out routes still contribute to distance and feasibility summaries.
 
 ## Data Sources
 
