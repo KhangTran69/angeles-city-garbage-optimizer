@@ -12,7 +12,6 @@ from src.optimization import (
 )
 import src.optimization as optimization_module
 from src.utils import get_route_load
-from src.data import BARANGAYS
 
 def test_greedy_baseline_simple():
     """Verify greedy baseline correctly partitions selected barangays and returns valid distances."""
