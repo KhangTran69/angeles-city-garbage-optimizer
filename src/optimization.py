@@ -6,6 +6,8 @@ import os
 import random
 import hashlib
 import json
+import time
+from math import isfinite
 import numpy as np
 import streamlit as st
 from typing import List, Tuple, Dict, Any, Optional
@@ -16,7 +18,7 @@ from src.config import (
 )
 from src.data import BARANGAYS, DEPOT, BARANGAY_WASTE_KG
 from src.utils import (
-    haversine, get_coord, route_distance_road, 
+    haversine, get_coord, route_distance_road, get_route_load,
     two_opt
 )
 
@@ -241,8 +243,14 @@ def run_ga(
     road_graph=None, distance_matrix: Optional[np.ndarray] = None, point_to_index: Optional[Dict[str, int]] = None,
     random_seed: Optional[int] = None, seed_chromosomes: Optional[List[List[str]]] = None,
     route_distance_cache: Optional[Dict[Tuple[str, ...], float]] = None,
+    timeout_seconds: Optional[float] = None, run_status: Optional[Dict[str, bool]] = None,
 ) -> Tuple[List[List[str]], List[float], float, List[float]]:
     """Execute CVRP solver with Seeding (Greedy + Manual GSO)."""
+    if timeout_seconds is not None and (not isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("timeout_seconds must be positive and finite")
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    if run_status is not None:
+        run_status["timed_out"] = False
     if not selected_barangays:
         return [[] for _ in range(n_vehicles)], [0.0 for _ in range(n_vehicles)], 0.0, []
 
@@ -327,6 +335,10 @@ def run_ga(
     min_delta = 0.05
 
     for gen in range(generations):
+        if deadline is not None and time.monotonic() >= deadline:
+            if run_status is not None:
+                run_status["timed_out"] = True
+            break
         # Elitism & Sorting
         ranked_population = sorted((fitness(chrom), chrom) for chrom in population)
         curr_fit, best_in_gen = ranked_population[0]
@@ -394,11 +406,17 @@ def run_benchmark(
     point_to_index: Optional[Dict[str, int]] = None,
     base_seed: int = 0,
     runs: int = 5,
+    timeout_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Execute a reproducible benchmark suite across sequential seeds."""
+    if timeout_seconds is not None and (not isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("timeout_seconds must be positive and finite")
     seeds = [base_seed + offset for offset in range(max(1, runs))]
     totals: List[float] = []
     histories: List[List[float]] = []
+    runtimes: List[float] = []
+    feasibility: List[bool] = []
+    timeouts: List[bool] = []
     shared_route_distance_cache: Dict[Tuple[str, ...], float] = {}
     seed_chromosomes = build_seed_chromosomes(
         selected_barangays,
@@ -411,7 +429,9 @@ def run_benchmark(
     )
 
     for seed in seeds:
-        _, _, total, history = run_ga(
+        status: Dict[str, bool] = {}
+        started = time.monotonic()
+        routes, _, total, history = run_ga(
             selected_barangays,
             n_vehicles,
             pop_size,
@@ -428,7 +448,21 @@ def run_benchmark(
             seed,
             seed_chromosomes,
             shared_route_distance_cache,
+            timeout_seconds,
+            status,
         )
+        runtimes.append(time.monotonic() - started)
+        flattened = [stop for route in routes for stop in route]
+        complete_assignment = (
+            len(flattened) == len(selected_barangays)
+            and sorted(flattened) == sorted(selected_barangays)
+        )
+        within_capacity = all(
+            get_route_load(route, waste_dict or BARANGAY_WASTE_KG) <= vehicle_capacity_kg
+            for route in routes
+        )
+        feasibility.append(complete_assignment and within_capacity)
+        timeouts.append(status.get("timed_out", False))
         totals.append(total)
         histories.append(history)
 
@@ -440,6 +474,15 @@ def run_benchmark(
         "best_total": float(min(totals)) if totals else 0.0,
         "worst_total": float(max(totals)) if totals else 0.0,
         "histories": histories,
+        "runtime_seconds": runtimes,
+        "feasible": feasibility,
+        "timed_out": timeouts,
+        "mean_runtime_seconds": float(np.mean(runtimes)) if runtimes else 0.0,
+        "std_runtime_seconds": float(np.std(runtimes)) if runtimes else 0.0,
+        "feasible_run_count": sum(feasibility),
+        "feasibility_rate": float(np.mean(feasibility)) if feasibility else 0.0,
+        "timed_out_run_count": sum(timeouts),
+        "timeout_rate": float(np.mean(timeouts)) if timeouts else 0.0,
     }
 
 def greedy_baseline(

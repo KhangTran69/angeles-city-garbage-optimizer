@@ -304,3 +304,45 @@ def test_run_benchmark_reuses_route_distance_cache_across_runs(monkeypatch):
 
     assert benchmark["totals"] == [3.0, 3.0, 3.0]
     assert route_distance_calls["count"] == 1
+
+
+def test_run_benchmark_reports_feasibility_runtime_and_timeout(monkeypatch):
+    selected = ["Amsic", "Anunas"]
+
+    def fake_run_ga(*args, **kwargs):
+        status = args[-1]
+        status["timed_out"] = True
+        return [["Amsic"], ["Anunas"]], [1.0, 1.0], 2.0, []
+
+    monkeypatch.setattr(optimization_module, "run_ga", fake_run_ga)
+    monkeypatch.setattr(optimization_module, "build_seed_chromosomes", lambda *args, **kwargs: [selected[:], selected[:]])
+    result = run_benchmark(selected, 2, 2, 3, 0.0, 0.0, base_seed=5, runs=2, timeout_seconds=0.01)
+
+    assert result["seeds"] == [5, 6]
+    assert len(result["runtime_seconds"]) == len(result["feasible"]) == len(result["timed_out"]) == 2
+    assert result["feasible"] == [True, True]
+    assert result["timed_out"] == [True, True]
+    assert result["feasibility_rate"] == 1.0
+    assert result["timeout_rate"] == 1.0
+
+
+def test_run_benchmark_marks_overloaded_routes_infeasible(monkeypatch):
+    selected = ["Amsic", "Anunas"]
+    monkeypatch.setattr(optimization_module, "run_ga", lambda *args, **kwargs: ([selected[:]], [1.0], 1.0, []))
+    monkeypatch.setattr(optimization_module, "build_seed_chromosomes", lambda *args, **kwargs: [selected[:], selected[:]])
+    result = run_benchmark(selected, 1, 2, 3, 0.0, 0.0, vehicle_capacity_kg=100, runs=1)
+    assert result["feasible"] == [False]
+
+
+def test_run_ga_cooperative_timeout_returns_best_route(monkeypatch):
+    selected = ["Amsic", "Anunas"]
+    status = {}
+    ticks = iter([10.0, 12.0])
+    monkeypatch.setattr(optimization_module.time, "monotonic", lambda: next(ticks))
+    routes, _, _, _ = run_ga(
+        selected, 1, 4, 3, 0.0, 0.0, random_seed=1,
+        seed_chromosomes=[selected[:], selected[:]], timeout_seconds=1.0,
+        run_status=status,
+    )
+    assert sorted(stop for route in routes for stop in route) == sorted(selected)
+    assert status["timed_out"] is True
