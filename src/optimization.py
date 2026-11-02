@@ -329,7 +329,8 @@ def run_ga(
             population[idx] = chromosome[:]
 
     history = []
-    best_chrom, best_fit = population[0], fitness(population[0])
+    best_chrom, best_fit = population[0][:], fitness(population[0])
+    patience_best_fit = best_fit
     patience = 30
     gen_no_improve = 0
     min_delta = 0.05
@@ -344,8 +345,11 @@ def run_ga(
         curr_fit, best_in_gen = ranked_population[0]
         
         # Early Stopping Logic
-        if curr_fit < best_fit - min_delta:
+        if curr_fit < best_fit:
             best_fit, best_chrom = float(curr_fit), best_in_gen[:]
+
+        if curr_fit < patience_best_fit - min_delta:
+            patience_best_fit = float(curr_fit)
             gen_no_improve = 0
         else:
             gen_no_improve += 1
