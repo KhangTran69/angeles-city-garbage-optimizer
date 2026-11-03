@@ -22,6 +22,9 @@ from src.utils import (
     two_opt
 )
 
+EARLY_STOP_PATIENCE = 30
+EARLY_STOP_MIN_DELTA = 0.05
+
 def _build_point_index() -> Dict[str, int]:
     """Create the shared depot/barangay lookup used by the distance matrix."""
     return {point: idx for idx, point in enumerate([DEPOT] + BARANGAYS)}
@@ -244,6 +247,8 @@ def run_ga(
     random_seed: Optional[int] = None, seed_chromosomes: Optional[List[List[str]]] = None,
     route_distance_cache: Optional[Dict[Tuple[str, ...], float]] = None,
     timeout_seconds: Optional[float] = None, run_status: Optional[Dict[str, bool]] = None,
+    early_stopping_patience: int = EARLY_STOP_PATIENCE,
+    early_stopping_min_delta: float = EARLY_STOP_MIN_DELTA,
 ) -> Tuple[List[List[str]], List[float], float, List[float]]:
     """Execute CVRP solver with Seeding (Greedy + Manual GSO)."""
     if timeout_seconds is not None and (not isfinite(timeout_seconds) or timeout_seconds <= 0):
@@ -331,9 +336,9 @@ def run_ga(
     history = []
     best_chrom, best_fit = population[0][:], fitness(population[0])
     patience_best_fit = best_fit
-    patience = 30
+    patience = early_stopping_patience
     gen_no_improve = 0
-    min_delta = 0.05
+    min_delta = early_stopping_min_delta
 
     for gen in range(generations):
         if deadline is not None and time.monotonic() >= deadline:
