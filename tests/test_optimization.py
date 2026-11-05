@@ -188,7 +188,13 @@ def test_load_cached_distance_matrix_uses_saved_matrix(tmp_path, monkeypatch):
     expected = np.zeros((34, 34), dtype=np.float32)
     np.save(matrix_path, expected)
     with open(str(matrix_path) + ".json", "w", encoding="utf-8") as metadata:
-        json.dump({"coordinate_signature": optimization_module._coordinate_signature()}, metadata)
+        json.dump(
+            {
+                "coordinate_signature": optimization_module._coordinate_signature(),
+                "routing_provider": optimization_module._configured_routing_provider(),
+            },
+            metadata,
+        )
     monkeypatch.setattr(optimization_module, "DISTANCE_MATRIX_PATH", str(matrix_path))
 
     loaded, point_to_idx = load_cached_distance_matrix()

@@ -107,6 +107,9 @@ def load_barangay_coords(path: str = COORDS_PATH) -> Dict[str, Tuple[float, floa
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return dict(DEFAULT_BARANGAY_COORDS)
 
+    if not isinstance(raw_data, dict):
+        return dict(DEFAULT_BARANGAY_COORDS)
+
     coords: Dict[str, Tuple[float, float]] = {}
     south, north, west, east = OSM_BBOX
     for barangay in BARANGAYS:

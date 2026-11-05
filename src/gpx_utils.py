@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 import json
+import math
 
 from src.utils import haversine
 from src.logger import logger, log_error
@@ -252,14 +253,81 @@ def compute_deviation_score(
     
     total_deviation = 0.0
     sample_points = comparison_polyline[::max(1, len(comparison_polyline) // 50)]  # Sample up to 50 points
+    baseline_segments = list(zip(baseline_polyline, baseline_polyline[1:]))
     
     for point in sample_points:
-        # Find minimum distance from this point to any point in baseline
-        min_dist = min(haversine(point, bp) for bp in baseline_polyline)
+        if baseline_segments:
+            min_dist = min(
+                _point_to_segment_distance_km(point, start, end)
+                for start, end in baseline_segments
+            )
+        else:
+            min_dist = haversine(point, baseline_polyline[0])
         total_deviation += min_dist
     
     avg_deviation_km = total_deviation / len(sample_points)
     return avg_deviation_km * 1000  # Convert to meters
+
+
+def _angular_distance_radians(
+    first: Tuple[float, float],
+    second: Tuple[float, float],
+) -> float:
+    """Calculate great-circle angular distance for latitude/longitude pairs."""
+    lat1, lon1 = map(math.radians, first)
+    lat2, lon2 = map(math.radians, second)
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    haversine_value = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    )
+    haversine_value = max(0.0, min(1.0, haversine_value))
+    return 2 * math.atan2(math.sqrt(haversine_value), math.sqrt(1 - haversine_value))
+
+
+def _initial_bearing_radians(
+    first: Tuple[float, float],
+    second: Tuple[float, float],
+) -> float:
+    """Calculate the initial bearing from one coordinate to another."""
+    lat1, lon1 = map(math.radians, first)
+    lat2, lon2 = map(math.radians, second)
+    delta_lon = lon2 - lon1
+    return math.atan2(
+        math.sin(delta_lon) * math.cos(lat2),
+        math.cos(lat1) * math.sin(lat2)
+        - math.sin(lat1) * math.cos(lat2) * math.cos(delta_lon),
+    )
+
+
+def _point_to_segment_distance_km(
+    point: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> float:
+    """Return the shortest spherical distance from a point to a route segment."""
+    earth_radius_km = 6371.0
+    segment_angle = _angular_distance_radians(start, end)
+    point_angle = _angular_distance_radians(start, point)
+    if segment_angle == 0:
+        return point_angle * earth_radius_km
+
+    bearing_delta = _initial_bearing_radians(start, point) - _initial_bearing_radians(start, end)
+    cross_track_angle = math.asin(
+        max(-1.0, min(1.0, math.sin(point_angle) * math.sin(bearing_delta)))
+    )
+    along_track_angle = math.atan2(
+        math.sin(point_angle) * math.cos(bearing_delta),
+        math.cos(point_angle),
+    )
+    if 0 <= along_track_angle <= segment_angle:
+        return abs(cross_track_angle) * earth_radius_km
+
+    return min(
+        _angular_distance_radians(start, point),
+        _angular_distance_radians(end, point),
+    ) * earth_radius_km
 
 
 def compare_routes(
@@ -382,6 +450,10 @@ def save_comparison_project(
         Path to the saved JSON file
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    project_root = output_dir.resolve()
+    normalized_name = project_name.strip()
+    if not normalized_name or "/" in normalized_name or "\\" in normalized_name:
+        raise ValueError("Project name must be a filename without directory separators.")
     
     project_data = {
         "project_name": project_name,
@@ -389,7 +461,9 @@ def save_comparison_project(
         "comparison": comparison.to_dict(),
     }
     
-    output_path = output_dir / f"{project_name.replace(' ', '_')}.json"
+    output_path = (project_root / f"{normalized_name.replace(' ', '_')}.json").resolve()
+    if output_path.parent != project_root:
+        raise ValueError("Project path must stay inside the GPX projects directory.")
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(project_data, f, indent=2)
     

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -482,6 +483,11 @@ def build_distance_matrix_meters(
         # Fallback to OSMnx if ORS fails but graph is available
         if graph_key:
             method = "road"
+        else:
+            raise ValueError(
+                "OpenRouteService could not calculate the waypoint matrix, and no local "
+                "road network is available."
+            )
 
     if method == "road":
         if not graph_key:
@@ -490,27 +496,29 @@ def build_distance_matrix_meters(
         import networkx as nx
 
         graph = _load_osmnx_graph(graph_key)
-        path_graph = graph.to_undirected()
         nearest_graph_nodes = [
             _nearest_node_for_coord(graph, coord) for coord in node_coords
         ]
         road_matrix: list[list[int]] = []
-        for source_index, source_coord in enumerate(node_coords):
+        for source_index in range(len(node_coords)):
             row: list[int] = []
-            for target_index, target_coord in enumerate(node_coords):
+            for target_index in range(len(node_coords)):
                 if source_index == target_index:
                     row.append(0)
                     continue
                 try:
                     meters = nx.shortest_path_length(
-                        path_graph,
+                        graph,
                         nearest_graph_nodes[source_index],
                         nearest_graph_nodes[target_index],
                         weight="length",
                     )
                     row.append(int(round(meters)))
-                except Exception:
-                    row.append(int(round(_haversine_km(source_coord, target_coord) * 1000)))
+                except (nx.NetworkXNoPath, nx.NodeNotFound) as error:
+                    raise ValueError(
+                        f"No directed road path exists from waypoint {source_index + 1} "
+                        f"to waypoint {target_index + 1}."
+                    ) from error
             road_matrix.append(row)
         return road_matrix
 
@@ -577,85 +585,95 @@ def build_optimized_route_polyline(
     if method == "ors":
         from src.config import ORS_API_KEY
         from src.map_utils import fetch_ors_route
-        if ORS_API_KEY:
-            # fetch_ors_route handles HGV profile and truck dimensions
-            route = fetch_ors_route([list(c) for c in ordered_coords], ORS_API_KEY)
-            if route:
-                return [(float(c[0]), float(c[1])) for c in route]
+        if not ORS_API_KEY:
+            raise ValueError("ORS routing requires a valid ORS_API_KEY in .env.")
+        route = fetch_ors_route([list(c) for c in ordered_coords], ORS_API_KEY)
+        if route:
+            return [(float(c[0]), float(c[1])) for c in route]
         
         # Fallback to OSMnx road routing if ORS fails but graph is available
         if graph_key:
             method = "road"
-
-    if method != "road" or not graph_key:
-        return ordered_coords
-
-
-
-    try:
-        import networkx as nx
-        import pyproj
-
-        graph = _load_osmnx_graph(graph_key)
-        path_graph = graph.to_undirected()
-        graph_crs = graph.graph.get("crs", "EPSG:4326")
-        transformer = None
-        if not _crs_is_wgs84(graph_crs):
-            transformer = pyproj.Transformer.from_crs(graph_crs, "EPSG:4326", always_xy=True)
-
-        def to_latlon(x_coord: float, y_coord: float) -> Coordinate:
-            if transformer is None:
-                return float(y_coord), float(x_coord)
-            lon, lat = transformer.transform(float(x_coord), float(y_coord))
-            return float(lat), float(lon)
-
-        def node_coord(node: Any) -> Coordinate:
-            node_data = graph.nodes[node]
-            return to_latlon(float(node_data["x"]), float(node_data["y"]))
-
-        def edge_segment_coords(source_node: Any, target_node: Any) -> list[Coordinate]:
-            edge_bundle = (
-                graph.get_edge_data(source_node, target_node)
-                or graph.get_edge_data(target_node, source_node)
-                or path_graph.get_edge_data(source_node, target_node)
+        else:
+            raise ValueError(
+                "OpenRouteService could not calculate the route, and no local road "
+                "network is available."
             )
-            if not edge_bundle:
-                return [node_coord(source_node), node_coord(target_node)]
 
-            edge_data = min(edge_bundle.values(), key=lambda item: item.get("length", 1))
-            geometry = edge_data.get("geometry")
-            if geometry is None:
-                return [node_coord(source_node), node_coord(target_node)]
-
-            coords = [to_latlon(x_coord, y_coord) for x_coord, y_coord in geometry.coords]
-            if len(coords) < 2:
-                return [node_coord(source_node), node_coord(target_node)]
-
-            source_coord = node_coord(source_node)
-            target_coord = node_coord(target_node)
-            forward_error = _haversine_km(coords[0], source_coord) + _haversine_km(coords[-1], target_coord)
-            reverse_error = _haversine_km(coords[0], target_coord) + _haversine_km(coords[-1], source_coord)
-            if reverse_error < forward_error:
-                coords.reverse()
-            return coords
-
-        route_polyline: list[Coordinate] = []
-        graph_nodes = [_nearest_node_for_coord(graph, coord) for coord in ordered_coords]
-
-        for segment_index in range(1, len(graph_nodes)):
-            source = graph_nodes[segment_index - 1]
-            target = graph_nodes[segment_index]
-            shortest_path = nx.shortest_path(path_graph, source, target, weight="length")
-            for source_node, target_node in zip(shortest_path[:-1], shortest_path[1:]):
-                segment_coords = edge_segment_coords(source_node, target_node)
-                if route_polyline and segment_coords:
-                    route_polyline.extend(segment_coords[1:])
-                else:
-                    route_polyline.extend(segment_coords)
-
-        return route_polyline or ordered_coords
-    except Exception:
+    if method != "road":
         return ordered_coords
+    if not graph_key:
+        raise ValueError("Road-network mode requires a resolved OSMnx graph.")
+
+    import networkx as nx
+    import pyproj
+
+    graph = _load_osmnx_graph(graph_key)
+    graph_crs = graph.graph.get("crs", "EPSG:4326")
+    transformer = None
+    if not _crs_is_wgs84(graph_crs):
+        transformer = pyproj.Transformer.from_crs(graph_crs, "EPSG:4326", always_xy=True)
+
+    def to_latlon(x_coord: float, y_coord: float) -> Coordinate:
+        if transformer is None:
+            return float(y_coord), float(x_coord)
+        lon, lat = transformer.transform(float(x_coord), float(y_coord))
+        return float(lat), float(lon)
+
+    def node_coord(node: Any) -> Coordinate:
+        node_data = graph.nodes[node]
+        return to_latlon(float(node_data["x"]), float(node_data["y"]))
+
+    def edge_segment_coords(source_node: Any, target_node: Any) -> list[Coordinate]:
+        edge_bundle = graph.get_edge_data(source_node, target_node)
+        if not edge_bundle:
+            raise ValueError(
+                f"The directed road edge from {source_node!r} to {target_node!r} is missing."
+            )
+
+        if graph.is_multigraph():
+            edge_data = min(edge_bundle.values(), key=lambda item: item.get("length", 1))
+        else:
+            edge_data = edge_bundle
+        geometry = edge_data.get("geometry")
+        if geometry is None:
+            return [node_coord(source_node), node_coord(target_node)]
+
+        coords = [to_latlon(x_coord, y_coord) for x_coord, y_coord in geometry.coords]
+        if len(coords) < 2:
+            return [node_coord(source_node), node_coord(target_node)]
+
+        source_coord = node_coord(source_node)
+        target_coord = node_coord(target_node)
+        forward_error = _haversine_km(coords[0], source_coord) + _haversine_km(coords[-1], target_coord)
+        reverse_error = _haversine_km(coords[0], target_coord) + _haversine_km(coords[-1], source_coord)
+        if reverse_error < forward_error:
+            coords.reverse()
+        return coords
+
+    route_polyline: list[Coordinate] = []
+    graph_nodes = [_nearest_node_for_coord(graph, coord) for coord in ordered_coords]
+
+    for segment_index in range(1, len(graph_nodes)):
+        source = graph_nodes[segment_index - 1]
+        target = graph_nodes[segment_index]
+        try:
+            shortest_path = nx.shortest_path(graph, source, target, weight="length")
+        except (nx.NetworkXNoPath, nx.NodeNotFound) as error:
+            raise ValueError(
+                f"No directed road path exists from waypoint {segment_index} "
+                f"to waypoint {segment_index + 1}."
+            ) from error
+        for source_node, target_node in zip(shortest_path[:-1], shortest_path[1:]):
+            segment_coords = edge_segment_coords(source_node, target_node)
+            if route_polyline and segment_coords:
+                route_polyline.extend(segment_coords[1:])
+            else:
+                route_polyline.extend(segment_coords)
+
+    if not route_polyline:
+        raise ValueError("The selected waypoints did not produce a drivable road path.")
+    return route_polyline
 
 
 def _build_visit_order_lookup(visit_order: Sequence[int]) -> dict[int, int]:
@@ -1270,14 +1288,15 @@ def _build_waypoint_tsp_map(
             color="#1565c0",
             weight=4,
             opacity=0.95,
-            tooltip="Optimized TSP Road Route",
+            tooltip="Optimized TSP Route",
         ).add_to(tsp_layer)
 
     visit_lookup = _waypoint_visit_lookup(visit_order)
     for waypoint_index, waypoint in enumerate(waypoints):
         visit_rank = visit_lookup.get(waypoint_index, "-")
+        safe_label = html.escape(str(waypoint["label"]), quote=True)
         popup_lines = [
-            f"<b>{waypoint['label']}</b>",
+            f"<b>{safe_label}</b>",
             f"Optimized visit: {visit_rank}",
             f"Original placemark: {waypoint['source_index']}",
             f"Lat/Lon: {waypoint['lat']:.6f}, {waypoint['lon']:.6f}",
@@ -1292,7 +1311,7 @@ def _build_waypoint_tsp_map(
             fill=True,
             fill_color="#64b5f6",
             fill_opacity=0.95,
-            tooltip=f"{visit_rank}. {waypoint['label']}",
+            tooltip=f"{visit_rank}. {safe_label}",
             popup=folium.Popup("<br>".join(popup_lines), max_width=320),
         ).add_to(waypoint_layer)
 
@@ -1357,15 +1376,18 @@ def _render_waypoint_tsp_analysis(
     routing_col1, routing_col2 = st.columns(2)
     with routing_col1:
         from src.config import ORS_API_KEY
-        engine_options = ["OSMnx Road Network", "Straight Line (Haversine)"]
+        engine_options = ["OSMnx Directed Road Network", "Straight Line (Haversine)"]
         if ORS_API_KEY:
-            engine_options.insert(0, "OpenRouteService (Truck Feasible)")
+            engine_options.insert(0, "OpenRouteService (HGV)")
             
         selected_engine = st.selectbox(
             "Routing Engine",
             engine_options,
             key=f"waypoint-tsp-engine-{widget_suffix}",
-            help="Choose between high-fidelity truck routing (ORS), local road network (OSMnx), or straight-line distance."
+            help=(
+                "Choose ORS HGV routing, the local directed OSMnx road network, or straight-line "
+                "distance. The ORS Matrix API does not apply per-vehicle height restrictions."
+            )
         )
         
         if selected_engine.startswith("OpenRouteService"):
@@ -1407,19 +1429,30 @@ def _render_waypoint_tsp_analysis(
             f"to Haversine waypoint distances. Details: {error}"
         )
 
-
+    routing_mode_labels = {
+        "ors": "OpenRouteService HGV distances, with local OSMnx fallback",
+        "road": "directed OSMnx road-network distances",
+        "haversine": "straight-line Haversine estimates",
+    }
+    routing_mode_label = routing_mode_labels.get(
+        active_distance_method, "selected routing engine"
+    )
 
     visit_order = solve_waypoint_tsp(
         tuple(tuple(row) for row in distance_matrix),
         return_to_start=return_to_start,
         time_limit_seconds=int(solver_seconds),
     )
-    optimized_route_path = build_optimized_route_polyline(
-        waypoint_coords,
-        tuple(visit_order),
-        method=active_distance_method,
-        graph_key=graph_key,
-    )
+    try:
+        optimized_route_path = build_optimized_route_polyline(
+            waypoint_coords,
+            tuple(visit_order),
+            method=active_distance_method,
+            graph_key=graph_key,
+        )
+    except Exception as error:
+        st.error(f"The selected road route could not be computed: {error}")
+        st.stop()
     tsp_distance_km = calculate_order_distance_km(distance_matrix, visit_order)
 
     metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
@@ -1443,7 +1476,7 @@ def _render_waypoint_tsp_analysis(
     st.caption(
         f"Parsed {len(original_path):,} {parsed['point_source']} points and "
         f"{len(waypoints):,} named waypoints. Comparison measures the recorded track "
-        "against the optimal road-network sequence through waypoints."
+        f"against the optimized sequence through waypoints using {routing_mode_label}."
     )
 
     # Google Maps API Verification for TSP
@@ -1526,7 +1559,7 @@ def integrate_tsp_feature() -> None:
         <div class='glass-card'>
             <p><b>Upload one GPX file with dense track points and named waypoints.</b></p>
             <p style='margin-bottom: 0;'>
-                The map overlays the original track, the RDP simplified track, and a road-network optimized route through the GPX placemarks.
+                The map overlays the original track, the RDP simplified track, and an optimized route through the GPX placemarks using the selected routing engine.
             </p>
         </div>
         """,
