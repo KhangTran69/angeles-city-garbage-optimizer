@@ -262,7 +262,13 @@ with st.sidebar:
     st.markdown(
         "<div class='sidebar-section-header'>🧬 GENETIC ALGORITHM</div>", unsafe_allow_html=True
     )
-    n_vehicles = st.slider("Fleet Size (Vehicles)", 1, 25, DEFAULT_N_VEHICLES)
+    n_vehicles = st.slider(
+        "Fleet Size (Vehicles)",
+        5,
+        25,
+        DEFAULT_N_VEHICLES,
+        help="The five core trucks are always included. Active service zones also need at least one supplementary truck.",
+    )
     pop_size = st.select_slider(
         "Population Size", options=[50, 100, 200, 300, 500], value=DEFAULT_POP_SIZE
     )
@@ -337,7 +343,17 @@ with st.sidebar:
         current_stop_service = st.number_input(
             "Load Time (min/stop)", 1.0, 60.0, float(STOP_SERVICE_MINUTES)
         )
-        truck_h = st.number_input("Vehicle Height (m)", 1.0, 5.0, 3.5)
+        truck_h = st.number_input(
+            "ORS Vehicle Height (m)",
+            1.0,
+            5.0,
+            float(DEFAULT_TRUCK_HEIGHT),
+            disabled=not ORS_API_KEY,
+            help=(
+                "Applied to ORS route geometry on the map. The ORS Matrix API does not accept "
+                "per-vehicle height restrictions, so optimization distances are not height-filtered."
+            ),
+        )
         # Weight/Width simplified for this UI version to keep it clean
 
     st.write("---")
@@ -364,7 +380,14 @@ with t1:
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
         
         # 0. Capacity Validation Safeguard (User Requested: Block if > 130%)
-        num_dynamic_calc = max(1, n_vehicles - 5)
+        if selected and n_vehicles < 6:
+            st.error(
+                "Active service zones need at least 6 vehicles: the five fixed core trucks "
+                "plus one supplementary truck. Increase Fleet Size before running optimization."
+            )
+            st.stop()
+
+        num_dynamic_calc = max(0, n_vehicles - 5)
         total_selected_waste = sum(waste_dict.get(b, 0) for b in selected)
         total_supplementary_capacity = num_dynamic_calc * vehicle_capacity
         
@@ -397,7 +420,7 @@ with t1:
         if selected:
             # Recalibrate: n_vehicles (slider) is the TOTAL target
             # Dynamic fleet = Total target - 5 core trucks
-            num_dynamic = max(1, n_vehicles - 5)
+            num_dynamic = n_vehicles - 5
             
             road_graph, dist_matrix, pt_to_idx = load_core_resources()
             prog_bar = st.progress(0, text="Initializing supplementary fleet...")
@@ -730,6 +753,7 @@ with t4:
             res["dists"],
             res["waste_dict"],
             ORS_API_KEY,
+            truck_height_m=truck_h,
         )
         st.session_state.map_cache_signature = map_cache_signature
 
@@ -902,6 +926,7 @@ with t4:
                         waste_dict=res["waste_dict"],
                         ors_key=ORS_API_KEY,
                         signature=map_cache_signature,
+                        truck_height_m=truck_h,
                     )
 
             cached_map_html = get_cached_map_view_html(
@@ -915,6 +940,7 @@ with t4:
                 res["waste_dict"],
                 ORS_API_KEY,
                 map_cache_signature,
+                truck_height_m=truck_h,
             )
             components.html(cached_map_html, height=650, scrolling=False)
     else:
@@ -1368,10 +1394,14 @@ with t8:
                 from pathlib import Path
 
                 projects_dir = Path(__file__).parent / "gpx_projects"
-                saved_path = save_comparison_project(
-                    comp, st.session_state.gpx_project_name, projects_dir
-                )
-                st.success(f"Saved to: {saved_path}")
+                try:
+                    saved_path = save_comparison_project(
+                        comp, st.session_state.gpx_project_name, projects_dir
+                    )
+                except ValueError as error:
+                    st.error(str(error))
+                else:
+                    st.success(f"Saved to: {saved_path}")
 
         with save_c2:
             # Export CSV

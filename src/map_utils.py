@@ -11,10 +11,10 @@ import streamlit as st
 from typing import List, Optional, Dict, Any
 import numpy as np
 from src.data import DEPOT_COORD, BARANGAY_COORDS, DEPOT, GOOGLE_ROUTES
-from src.config import VEHICLE_COLORS, ORS_BASE_URL
+from src.config import DEFAULT_TRUCK_HEIGHT, VEHICLE_COLORS, ORS_BASE_URL
 from src.logger import log_api_call, logger
 
-MAP_CACHE_VERSION = "2026-10-19-map-cache-v4"
+MAP_CACHE_VERSION = "2026-10-19-map-cache-v5"
 FULL_FLEET_MAX_ROUTE_POINTS = 120
 
 
@@ -46,7 +46,11 @@ def decode_polyline(polyline_str: str) -> List[List[float]]:
     return coordinates
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_ors_route(coords: List[List[float]], api_key: str) -> Optional[List[List[float]]]:
+def fetch_ors_route(
+    coords: List[List[float]],
+    api_key: str,
+    vehicle_height_m: Optional[float] = None,
+) -> Optional[List[List[float]]]:
     """Fetch high-fidelity road routes from OpenRouteService (GeoJSON Protocol)."""
     import time
     if not api_key:
@@ -63,16 +67,17 @@ def fetch_ors_route(coords: List[List[float]], api_key: str) -> Optional[List[Li
     }
     # ORS expects [lon, lat]
     from src.config import (
-        DEFAULT_TRUCK_HEIGHT, DEFAULT_TRUCK_WIDTH, 
+        DEFAULT_TRUCK_WIDTH,
         DEFAULT_TRUCK_LENGTH, DEFAULT_TRUCK_WEIGHT
     )
+    height_m = DEFAULT_TRUCK_HEIGHT if vehicle_height_m is None else float(vehicle_height_m)
     
     body = {
         "coordinates": [[c[1], c[0]] for c in coords],
         "options": {
             "profile_params": {
                 "restrictions": {
-                    "height": DEFAULT_TRUCK_HEIGHT,
+                    "height": height_m,
                     "width": DEFAULT_TRUCK_WIDTH,
                     "length": DEFAULT_TRUCK_LENGTH,
                     "weight": DEFAULT_TRUCK_WEIGHT
@@ -179,7 +184,8 @@ def build_folium_route_map(
     vehicle_capacity_kg: Optional[int] = None,
     waste_dict: Optional[Dict[str, int]] = None,
     simulation_time_min: int = 9999,
-    ors_key: str = ""
+    ors_key: str = "",
+    truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
 ) -> Any:
     """Create an interactive Tactical Dashboard Map with Realistic Road Routing."""
     import folium
@@ -230,12 +236,14 @@ def build_folium_route_map(
         # 🚀 Tiered Routing Logic
         road_coords = None
         if ors_key:
-            road_coords = fetch_ors_route(base_coords, ors_key)
+            road_coords = fetch_ors_route(base_coords, ors_key, truck_height_m)
         
         # Fallback to base polyline if ORS fails
         final_coords = road_coords if road_coords else base_coords
         distance_km = float(dists[i] if i < len(dists) else 0.0)
         route_tooltip = f"Vehicle {i+1} • {len(route)} stops • {distance_km:.2f} km"
+        if ors_key and not road_coords:
+            route_tooltip += " • ORS route unavailable; showing stop-to-stop geometry"
         route_popup_html = _build_vehicle_popup_html(route, color, i, distance_km, waste_dict)
 
         if is_full_fleet_view:
@@ -398,6 +406,7 @@ def build_map_cache_signature(
     dists: List[float],
     waste_dict: Optional[Dict[str, int]] = None,
     ors_key: str = "",
+    truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
 ) -> str:
     """Create a stable signature so cached map files match the active optimization results."""
     payload = {
@@ -406,6 +415,7 @@ def build_map_cache_signature(
         "dists": [round(float(distance), 3) for distance in dists],
         "waste_dict": waste_dict or {},
         "ors_enabled": bool(ors_key),
+        "truck_height_m": float(truck_height_m),
         "coords": BARANGAY_COORDS,
         "colors": VEHICLE_COLORS,
     }
@@ -434,9 +444,12 @@ def get_cached_map_view_html(
     waste_dict: Optional[Dict[str, int]] = None,
     ors_key: str = "",
     signature: str = "",
+    truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
 ) -> str:
     """Return a rendered map view from disk cache, writing it once on first use."""
-    active_signature = signature or build_map_cache_signature(routes, dists, waste_dict, ors_key)
+    active_signature = signature or build_map_cache_signature(
+        routes, dists, waste_dict, ors_key, truck_height_m
+    )
     cache_path = get_map_view_cache_path(active_signature, view_mode)
     if os.path.exists(cache_path):
         with open(cache_path, "r", encoding="utf-8") as cache_file:
@@ -452,6 +465,7 @@ def get_cached_map_view_html(
         point_to_index,
         waste_dict=waste_dict,
         ors_key=ors_key,
+        truck_height_m=truck_height_m,
     )
     rendered_html = map_obj.get_root().render()
     temp_cache_path = f"{cache_path}.tmp"
@@ -472,6 +486,7 @@ def warm_cached_map_views(
     waste_dict: Optional[Dict[str, int]] = None,
     ors_key: str = "",
     signature: str = "",
+    truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
 ) -> None:
     """Ensure a set of tactical map views has been rendered to disk."""
     for view_mode in view_modes:
@@ -486,6 +501,7 @@ def warm_cached_map_views(
             waste_dict=waste_dict,
             ors_key=ors_key,
             signature=signature,
+            truck_height_m=truck_height_m,
         )
 
 def compute_stop_schedule(

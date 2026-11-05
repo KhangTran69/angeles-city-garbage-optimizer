@@ -36,24 +36,43 @@ def _coordinate_signature() -> str:
     return hashlib.sha256(json.dumps(payload, separators=(",", ":")).encode()).hexdigest()
 
 
-def _save_distance_matrix(matrix: np.ndarray) -> None:
+def _configured_routing_provider() -> str:
+    """Identify the provider expected for the current routing configuration."""
+    from src.config import ORS_API_KEY, ORS_ROUTING_PROFILE
+
+    return f"ors:{ORS_ROUTING_PROFILE}" if ORS_API_KEY else "osmnx:drive"
+
+
+def _save_distance_matrix(matrix: np.ndarray, routing_provider: Optional[str] = None) -> None:
     os.makedirs(os.path.dirname(DISTANCE_MATRIX_PATH), exist_ok=True)
     np.save(DISTANCE_MATRIX_PATH, matrix)
     with open(DISTANCE_MATRIX_PATH + ".json", "w", encoding="utf-8") as metadata:
-        json.dump({"coordinate_signature": _coordinate_signature()}, metadata)
+        json.dump(
+            {
+                "coordinate_signature": _coordinate_signature(),
+                "routing_provider": routing_provider or _configured_routing_provider(),
+            },
+            metadata,
+        )
 
 
-def load_cached_distance_matrix() -> Tuple[Optional[np.ndarray], Dict[str, int]]:
+def load_cached_distance_matrix(
+    routing_provider: Optional[str] = None,
+) -> Tuple[Optional[np.ndarray], Dict[str, int]]:
     """Load the persisted distance matrix without touching the road graph."""
     point_to_idx = _build_point_index()
     n_points = len(point_to_idx)
+    expected_provider = routing_provider or _configured_routing_provider()
     if not os.path.exists(DISTANCE_MATRIX_PATH):
         return None, point_to_idx
 
     try:
         with open(DISTANCE_MATRIX_PATH + ".json", encoding="utf-8") as metadata_file:
             metadata = json.load(metadata_file)
-        if metadata.get("coordinate_signature") != _coordinate_signature():
+        if (
+            metadata.get("coordinate_signature") != _coordinate_signature()
+            or metadata.get("routing_provider") != expected_provider
+        ):
             return None, point_to_idx
         dist_matrix = np.load(DISTANCE_MATRIX_PATH)
     except Exception:
@@ -201,13 +220,14 @@ def get_distance_matrix(_graph) -> Tuple[np.ndarray, Dict[str, int]]:
     # 🚀 TIER 1: HIGH-FIDELITY TRUCK ROUTING (ORS API)
     from src.config import ORS_API_KEY
     if ORS_API_KEY:
+        from src.config import ORS_ROUTING_PROFILE
         from src.map_utils import fetch_ors_matrix
         st.info("📡 Using OpenRouteService HGV Matrix for Truck-Feasible Optimization...")
         coords = [get_coord(p) for p in points]
         matrix = fetch_ors_matrix([list(c) for c in coords], ORS_API_KEY)
         if matrix:
             dist_matrix = np.array(matrix, dtype=np.float32) / 1000.0
-            _save_distance_matrix(dist_matrix)
+            _save_distance_matrix(dist_matrix, f"ors:{ORS_ROUTING_PROFILE}")
             return dist_matrix, point_to_idx
         else:
             st.warning("⚠️ ORS Matrix API failed. Falling back to local road network approximation.")
@@ -236,7 +256,7 @@ def get_distance_matrix(_graph) -> Tuple[np.ndarray, Dict[str, int]]:
                 )
             dist_matrix[i, j] = d / 1000.0
     matrix_prog.empty()
-    _save_distance_matrix(dist_matrix)
+    _save_distance_matrix(dist_matrix, "osmnx:drive")
     return dist_matrix, point_to_idx
 
 def run_ga(
