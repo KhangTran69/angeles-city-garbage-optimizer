@@ -60,34 +60,10 @@ The tactical map works without an API key using the bundled coordinates and loca
 
 ## Project Structure
 
-```
-angeles-garbage-optimizer/
-├── app.py                              # Streamlit UI entry point
-├── requirements.txt                    # Python dependencies
-├── README.md                           # This file
-├── .gitignore
-├── pyrightconfig.json                  # Type checker config
-├── .streamlit/config.toml              # Streamlit theme (optional)
-│
-├── src/                                # Core logic package
-│   ├── __init__.py
-│   ├── config.py                       # Constants, colours, defaults
-│   ├── data.py                         # Barangays, coords, waste kg, depot
-│   ├── utils.py                        # haversine, ETA, metrics, 2-opt
-│   ├── optimization.py                 # GA engine
-│   ├── map_utils.py                    # Folium map, road tracing, schedule
-│   ├── session_state.py                # Streamlit session init
-│   └── research_validation.py          # Baseline comparison and stability tools
-│
-├── data/                               # Static data files
-│   ├── barangay_coords.json
-│   └── angeles_city_network.graphml
-│
-└── tests/                              # Pytest coverage for utility and optimizer logic
-    ├── test_data.py
-    ├── test_optimization.py
-    └── test_utils.py
-```
+`app.py` wires the Streamlit workflow. Reusable calculations, data handling,
+routing, GPX analysis, and reporting live in `src/`; focused suites live in
+`tests/`. Use the [change review map](#change-review-map) to find the owning
+modules and the closest automated evidence for a change.
 
 ## Usage
 
@@ -145,22 +121,32 @@ Waste estimates are illustrative, not validated municipal measurements. Haversin
 
 ## Verification
 
-GitHub Actions runs these on every push and pull request:
+GitHub Actions runs these on Python 3.12 for every push and pull request:
 
 ```bash
-python -m pytest -q
 python -m ruff check src tests --select E9,F
-```
-
-Optional static checks, advisory until the existing backlog is cleared:
-
-```bash
+python -m pytest -q
 python -m basedpyright src
 ```
 
 `ruff.toml` still selects `E`, `F`, `I`, and `UP` for local use, but the CI gate
 is narrower on purpose: the repository has not yet been cleaned up to that
 standard. Tighten `--select` in `.github/workflows/ci.yml` as the backlog shrinks.
+
+## Change Review Map
+
+| Change area | Read first | Focused evidence and limits |
+| --- | --- | --- |
+| Route assignment, capacity handling, GA behavior, distance-matrix reuse | [`src/optimization.py`](src/optimization.py), [`src/utils.py`](src/utils.py) | [`tests/test_optimization.py`](tests/test_optimization.py) and [`tests/test_utils.py`](tests/test_utils.py) cover route completeness, capacity, baselines, reproducibility, timeout results, cached-matrix validation, and the no-graph distance fallback. The GA is heuristic, not an exact CVRP solver. |
+| Barangay coordinates and bundled demand inputs | [`src/data.py`](src/data.py), [`src/config.py`](src/config.py), [`data/barangay_coords.json`](data/barangay_coords.json) | [`tests/test_data.py`](tests/test_data.py) covers coordinate load/save and corrupted or missing files. [`tests/test_benchmark.py`](tests/test_benchmark.py) checks fixed benchmark inputs and fingerprints. Bundled waste estimates remain illustrative. |
+| Road distances, route geometry, schedules, and map caching | [`src/map_utils.py`](src/map_utils.py), [`src/google_utils.py`](src/google_utils.py), [`src/optimization.py`](src/optimization.py) | [`tests/test_map_utils.py`](tests/test_map_utils.py) and [`tests/test_utils.py`](tests/test_utils.py) cover map-cache behavior and the Haversine fallback. They do not call ORS/Google or verify rendered map appearance; optimization distances and displayed route geometry can use different paths. |
+| GPX import, route comparison, and uploaded-point TSP | [`src/gpx_utils.py`](src/gpx_utils.py), [`src/tsp_feature.py`](src/tsp_feature.py) | [`tests/test_gpx_utils.py`](tests/test_gpx_utils.py) covers parsing and route metrics; [`tests/test_tsp_feature.py`](tests/test_tsp_feature.py) covers upload parsing, point selection, route simplification, and tour constraints. These tests do not verify the full Streamlit interaction. |
+| Benchmark runs and export payloads | [`src/benchmark.py`](src/benchmark.py), [`src/reporting.py`](src/reporting.py), [`src/research_validation.py`](src/research_validation.py) | [`tests/test_benchmark.py`](tests/test_benchmark.py) covers scenario construction, fingerprints, source identity, feasibility, and timeout reporting. [`tests/test_reporting.py`](tests/test_reporting.py) covers export summaries. Fixed benchmark inputs do not establish field route quality or operational savings. |
+| Streamlit workflow, session state, and experiment history | [`app.py`](app.py), [`src/session_state.py`](src/session_state.py), [`src/experiment_store.py`](src/experiment_store.py) | The current `main` test suite has no direct app, session-state, or experiment-store tests. Check the relevant UI flow manually in addition to the [CI checks](#verification). |
+
+The map points to file-level test suites to reduce link drift. The checks in CI
+are the `pytest`, Ruff, and BasedPyright commands listed above; they do not
+exercise ORS/Google requests or the rendered Streamlit interface.
 
 ## License
 
