@@ -200,7 +200,9 @@ def load_road_network() -> Optional[Any]:
         try: return ox.load_graphml(GRAPH_PATH)
         except Exception: pass
     try:
-        graph = ox.project_graph(ox.graph_from_bbox(OSM_BBOX, network_type="drive"))
+        south, north, west, east = OSM_BBOX
+        bbox = (west, south, east, north)
+        graph = ox.project_graph(ox.graph_from_bbox(bbox, network_type="drive"))
         ox.save_graphml(ox.routing.add_edge_travel_times(ox.routing.add_edge_speeds(graph)), GRAPH_PATH)
         return graph
     except Exception: return None
