@@ -40,6 +40,28 @@ def test_greedy_baseline_custom_waste():
     assert len(routes[0]) == 2
 
 
+def test_load_road_network_converts_project_bbox_to_osmnx_order(monkeypatch, tmp_path):
+    import osmnx as ox
+
+    graph = object()
+    calls = []
+    monkeypatch.setattr(optimization_module, "GRAPH_PATH", str(tmp_path / "road.graphml"))
+    monkeypatch.setattr(
+        ox,
+        "graph_from_bbox",
+        lambda bbox, **kwargs: (calls.append((bbox, kwargs)) or graph),
+    )
+    monkeypatch.setattr(ox, "project_graph", lambda value: value)
+    monkeypatch.setattr(ox.routing, "add_edge_speeds", lambda value: value)
+    monkeypatch.setattr(ox.routing, "add_edge_travel_times", lambda value: value)
+    monkeypatch.setattr(ox, "save_graphml", lambda value, path: None)
+
+    loaded = optimization_module.load_road_network()
+
+    assert loaded is graph
+    assert calls == [((120.50, 15.10, 120.64, 15.20), {"network_type": "drive"})]
+
+
 def test_decode_chromosome_respects_capacity_when_possible():
     """The decoder should keep routes within capacity when a feasible split exists."""
     waste_list = [1000, 900, 1100]
