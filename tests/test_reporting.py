@@ -20,3 +20,21 @@ def test_build_export_payload_contains_route_summaries():
     assert payload["title"] == "Test"
     assert payload["route_summaries"][0]["vehicle"] == 1
     assert payload["route_summaries"][0]["load_kg"] == 1900
+
+
+def test_build_export_payload_preserves_infeasible_diagnostic_status():
+    results = {
+        "routes": [["Amsic"]],
+        "dists": [2.0],
+        "total": 2.0,
+        "waste_dict": {"Amsic": 1200},
+        "capacity": 1000,
+        "feasible": False,
+        "feasibility": {"reason_codes": ["route_exceeds_vehicle_capacity"]},
+    }
+
+    payload = build_export_payload("Test", results)
+
+    assert payload["feasibility"]["status"] == "INFEASIBLE_DIAGNOSTIC"
+    assert payload["feasibility"]["feasible"] is False
+    assert payload["feasibility"]["reason_codes"] == ["route_exceeds_vehicle_capacity"]

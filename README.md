@@ -68,7 +68,7 @@ modules and the closest automated evidence for a change.
 ## Usage
 
 1. **Configure** — set vehicles, population, generations, rates in the sidebar.
-2. **Select barangays** — all 33 or a subset.
+2. **Select barangays** — all 33 or a subset, with payload capacity large enough for each selected stop and the total workload.
 3. **Run** — click "Run Optimization" and watch the GA evolve.
 4. **Analyse** — route cards, optimization trend, baseline comparison, savings.
 5. **Map** — per-truck or all-routes interactive map.
@@ -79,9 +79,11 @@ modules and the closest automated evidence for a change.
 
 Run `python -m src.benchmark` from the repository root to compare the capacity-aware greedy baseline with GA seeds 42–44 for three demand cases: the bundled base estimates and uniform -10% / +10% changes. The same six barangays (Amsic, Anunas, Balibago, Capaya, Claro M. Recto, and Cuayan), three vehicles, 10,000 kg capacity per vehicle, built-in default coordinates, Haversine distance matrix, population 20, 30 generations, mutation rate 0.05, and crossover rate 0.85 are used in every case. Positive kilogram values are rounded to the nearest integer, with half-kilogram ties rounded up. Scenario construction copies the source estimates and does not alter them.
 
-The schema-versioned JSON includes exact demand values, a canonical SHA-256 input fingerprint for each scenario, source Git revision / dirty state / source-tree SHA-256, Python and NumPy versions, greedy distance and feasibility, and each seed's GA distance, feasibility, runtime, and timeout status. The source-tree hash covers tracked and nonignored untracked project files, including documentation; it excludes common caches/build output, local `.env` files (except `.env.example`), and the exact `--json-out` file. Outside a usable Git worktree, it falls back to hashing project files with those exclusions. Summaries include feasibility rate, distance spread, mean runtime, and timeout rate. Runtime varies by machine and is reported for context, not as a performance guarantee. Use `--json-out report.json` to save the report.
+The schema-versioned JSON includes exact demand values, a canonical SHA-256 input fingerprint for each scenario, source Git revision / dirty state / source-tree SHA-256, Python and NumPy versions, and reference runtime details: OS name/release/version, CPU architecture, CPU family/model when available, and logical CPU count when available. It also includes greedy distance and feasibility, and each seed's GA distance, feasibility, runtime, and timeout status. The source-tree hash covers tracked and nonignored untracked project files, including documentation; it excludes common caches/build output, local `.env` files (except `.env.example`), and the exact `--json-out` file. Outside a usable Git worktree, it falls back to hashing project files with those exclusions. Summaries include feasibility rate, distance spread, mean runtime, and timeout rate. Runtime varies by machine and is reported for context, not as a performance guarantee. Use `--json-out report.json` to save the report.
 
 An optional `--timeout-seconds 5` sets a positive finite cooperative budget independently for each scenario/seed GA run. The per-run deadline starts at invocation; setup before the first generation check and an active generation cannot be interrupted, so runtime may exceed the budget in either case. The best-so-far route is retained and reported with its feasibility and timeout status. The timeout setting and early-stopping patience/minimum improvement are included in each scenario fingerprint.
+
+Schema version 3 also records four fixed evaluation cases: an exact-capacity feasible assignment, demand above fleet capacity, an invalid barangay name, and a stop above per-vehicle capacity. Each case includes its complete input (demand, fleet, Haversine model, selected-stop coordinates, and depot), solver settings, outcome, and SHA-256 input fingerprint. These cases use seed 42, population 4, two generations, and no timeout. Valid cases record input-validation reasons/details separately from solver feasibility, route loads, distance, and runtime; invalid input records the pre-solver validation error and validation runtime with no solver result. A valid but infeasible request rejected by its settings is recorded as `INFEASIBLE_INPUT`, with its reason/details and no solver result. Solver errors are allowed to surface instead of being labeled invalid input. Diagnostic cases contain no dispatch route assignment and do not change the app's Dispatch ZIP guard.
 
 Waste estimates are illustrative, not validated municipal measurements. Haversine distances are straight-line estimates, not road distances. This report measures algorithm sensitivity on the specified inputs; it is not operational or field validation.
 
@@ -95,6 +97,12 @@ Waste estimates are illustrative, not validated municipal measurements. Haversin
 | Mutation Rate | 0.05 | Probability of random swap |
 | Crossover Rate | 0.85 | Probability of route recombination |
 | Vehicle Capacity | 5000 kg | Max load per truck |
+
+### Solver input limits and infeasible demand
+
+The solver accepts up to 33 distinct known barangays, 1–25 vehicles, population 2–500, 1–1,000 generations, and payload capacity up to 20,000 kg per vehicle. Mutation and crossover rates must be finite values from 0 through 1; timeout must be positive and finite. A non-empty custom waste mapping must provide a finite, non-negative value for every selected barangay; `None` or an empty mapping uses bundled estimates. Invalid inputs are rejected before route search.
+
+A request is infeasible when any selected barangay's estimated load exceeds one vehicle's capacity or when total selected load exceeds the fleet's combined capacity. Direct `run_ga` calls raise `InfeasibleRoutingProblem` with stable reason codes and details by default. The main app keeps its existing 130% workload ceiling: under that ceiling it may run an explicitly labeled diagnostic candidate for infeasible demand, but it reports feasibility, marks overloaded routes as diagnostic, and disables the Dispatch ZIP. Diagnostic JSON/CSV exports carry an `INFEASIBLE_DIAGNOSTIC` status. Feasible input can also produce an infeasible heuristic result; the app reports that outcome instead of calling it an active dispatch. Benchmark results show per-seed feasibility and timeout status.
 
 ## Methodology Notes
 

@@ -12,6 +12,7 @@ from src.optimization import (
     build_seed_chromosomes,
     run_benchmark,
     run_ga,
+    validate_ga_inputs,
     evaluate_manual_baseline,
     greedy_baseline,
 )
@@ -35,23 +36,25 @@ def run_sensitivity_analysis_tab(
     st.markdown("<div class='section-title'>Sensitivity Analysis (5 Runs)</div>", unsafe_allow_html=True)
     if st.button("🔄 Run Analysis (5x)", type="primary", key="sensitivity_btn"):
         st.info("Running a reproducible 5-seed benchmark to check stability...")
-        benchmark = run_benchmark(
-            selected_barangays,
-            n_vehicles,
-            pop_size,
-            generations,
-            mutation_rate,
-            crossover_rate,
-            vehicle_capacity_kg,
-            waste_dict,
-            road_graph,
-            distance_matrix,
-            point_to_index,
-            base_seed,
-            5,
-        )
-        sa_results = benchmark["totals"]
-        
+        try:
+            benchmark = run_benchmark(
+                selected_barangays,
+                n_vehicles,
+                pop_size,
+                generations,
+                mutation_rate,
+                crossover_rate,
+                vehicle_capacity_kg,
+                waste_dict,
+                road_graph,
+                distance_matrix,
+                point_to_index,
+                base_seed,
+                5,
+            )
+        except ValueError as error:
+            st.error(f"Cannot run sensitivity analysis: {error}")
+            return
         st.success("Analysis Complete!")
         c1, c2 = st.columns(2)
         with c1:
@@ -61,9 +64,19 @@ def run_sensitivity_analysis_tab(
             
         sa_df = pd.DataFrame({
             "Seed": benchmark["seeds"],
-            "Total Distance (km)": sa_results
+            "Total Distance (km)": benchmark["totals"],
+            "Feasible": benchmark["feasible"],
+            "Timed Out": benchmark["timed_out"],
         })
-        st.line_chart(sa_df.set_index("Seed"))
+        st.dataframe(
+            sa_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Total Distance (km)": st.column_config.NumberColumn(format="%.2f km")
+            },
+        )
+        st.line_chart(sa_df.set_index("Seed")[["Total Distance (km)"]])
 
 
 def render_methodology_expander():
@@ -127,6 +140,8 @@ def render_research_baseline_comparison(
     n_vehicles = params.get("n_vehicles", 5)
     total_demand = sum(waste_dict.get(barangay, 0) for barangay in selected)
     fleet_capacity = vehicle_capacity * n_vehicles
+    ga_feasibility = ga_results.get("feasible")
+    ga_is_feasible = ga_feasibility is True
     
     with st.spinner("Computing reference baselines..."):
         gso_total, gso_routes = evaluate_manual_baseline(
@@ -155,17 +170,41 @@ def render_research_baseline_comparison(
             f"**{fleet_capacity:,} kg** ({n_vehicles} vehicles × {vehicle_capacity:,} kg). "
             "This scenario is infeasible for a single dispatch wave, so the distance comparison is not a strict apples-to-apples vehicle comparison."
         )
-    else:
+    elif ga_is_feasible:
         st.info(
             f"🔬 **Research Note:** All baselines in this view use the active capacity setting "
             f"(**{vehicle_capacity:,} kg per vehicle**) and the same distance model."
         )
+    else:
+        result_label = (
+            "infeasible diagnostic"
+            if ga_feasibility is False
+            else "unverified route result"
+        )
+        st.warning(
+            f"⚠️ **Comparison caution:** the GA result is an {result_label}. Its distance is shown for "
+            "diagnostic review and must not be treated as a dispatch-ready efficiency result."
+        )
 
     cols = st.columns(3)
+    ga_label = (
+        "🧬 GA Optimized"
+        if ga_is_feasible
+        else "🧬 GA Diagnostic"
+        if ga_feasibility is False
+        else "🧬 GA Unverified"
+    )
+    ga_delta = (
+        f"↓ {ga_vs_gso:.2f}% Efficiency"
+        if ga_is_feasible
+        else "Not dispatchable"
+        if ga_feasibility is False
+        else "Feasibility unverified"
+    )
     c_labels = [
         ("🛣️ Manual GSO", f"{gso_total:.2f} km", "Sector Baseline", "#ef9a9a"),
         ("🤖 Greedy Algorithm", f"{greedy_total:.2f} km", "Nearest Neighbor", "#ffb74d"),
-        ("🧬 GA Optimized", f"{ga_total:.2f} km", f"↓ {ga_vs_gso:.2f}% Efficiency", "#69f0ae")
+        (ga_label, f"{ga_total:.2f} km", ga_delta, "#69f0ae" if ga_is_feasible else "#ef9a9a")
     ]
     
     for col, (lbl, val, delta, color) in zip(cols, c_labels):
@@ -187,18 +226,27 @@ def render_research_baseline_comparison(
             "Distance (km)": round(gso_total, 2),
             "Trips/Routes": len(gso_routes),
             "Max Route Load (kg)": max((get_route_load(route, waste_dict) for route in gso_routes), default=0),
+            "Feasibility": "Not evaluated",
         },
         {
             "Method": "Greedy",
             "Distance (km)": round(greedy_total, 2),
             "Trips/Routes": len(greedy_routes),
             "Max Route Load (kg)": max((get_route_load(route, waste_dict) for route in greedy_routes), default=0),
+            "Feasibility": "Not evaluated",
         },
         {
             "Method": "GA",
             "Distance (km)": round(ga_total, 2),
             "Trips/Routes": len(ga_results["routes"]),
             "Max Route Load (kg)": max((get_route_load(route, waste_dict) for route in ga_results["routes"]), default=0),
+            "Feasibility": (
+                "Feasible"
+                if ga_is_feasible
+                else "Infeasible diagnostic"
+                if ga_feasibility is False
+                else "Unverified"
+            ),
         },
     ]
     st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
@@ -220,19 +268,34 @@ def run_statistical_verification(
 ):
     """Perform a one-sample T-test comparing repeated GA runs to the GSO baseline."""
     ga_distances = []
+    feasibility = []
+    try:
+        effective_waste = validate_ga_inputs(
+            selected_barangays,
+            n_vehicles,
+            pop_size,
+            generations,
+            mutation_rate,
+            crossover_rate,
+            vehicle_capacity_kg,
+            waste_dict,
+        )
+    except ValueError as error:
+        st.error(f"Cannot run statistical verification: {error}")
+        return
     gso_ref, _ = evaluate_manual_baseline(
         selected_barangays,
         road_graph,
         distance_matrix,
         point_to_index,
         vehicle_capacity_kg,
-        waste_dict,
+        effective_waste,
     )
     seed_chromosomes = build_seed_chromosomes(
         selected_barangays,
         n_vehicles,
         vehicle_capacity_kg,
-        waste_dict,
+        effective_waste,
         road_graph,
         distance_matrix,
         point_to_index,
@@ -240,13 +303,29 @@ def run_statistical_verification(
 
     prog = st.progress(0, text="Running GA trials...")
     for i in range(n_runs):
+        run_status: Dict[str, Any] = {}
         _, _, trial_total, _ = run_ga(
             selected_barangays, n_vehicles, pop_size, generations, mutation_rate, crossover_rate,
-            None, None, vehicle_capacity_kg, waste_dict, road_graph, distance_matrix, point_to_index,
-            base_seed + i, seed_chromosomes,
+            None, None, vehicle_capacity_kg, effective_waste, road_graph, distance_matrix, point_to_index,
+            base_seed + i, seed_chromosomes, run_status=run_status,
         )
         ga_distances.append(trial_total)
+        feasibility.append(run_status.get("feasible") is True)
         prog.progress((i + 1) / n_runs)
+
+    trial_rows = pd.DataFrame({
+        "Seed": [base_seed + i for i in range(n_runs)],
+        "GA Distance": ga_distances,
+        "Feasible": feasibility,
+        "Baseline": gso_ref,
+    })
+    st.dataframe(trial_rows, hide_index=True)
+    if not all(feasibility):
+        st.warning(
+            "Statistical verification is inconclusive because the sample includes infeasible or unverified diagnostic routes. "
+            "Significance and savings claims are suppressed."
+        )
+        return
 
     t_stat, p_value = stats.ttest_1samp(ga_distances, popmean=gso_ref)
     ga_mean = round(np.mean(ga_distances), 2)
@@ -259,5 +338,4 @@ def run_statistical_verification(
     else:
         st.warning(f"⚠️ Not significant (p = {p_value:.2f}).")
 
-    st.dataframe(pd.DataFrame({"Seed": [base_seed + i for i in range(n_runs)], "GA Distance": ga_distances, "Baseline": gso_ref}), hide_index=True)
     st.info(f"📄 **Results Statement:** GA Mean: {ga_mean:.2f}km, Baseline: {gso_ref:.2f}km, Improvement: {pct_saving:.2f}%. p-value={p_value:.2f}")

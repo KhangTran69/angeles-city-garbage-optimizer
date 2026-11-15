@@ -45,6 +45,18 @@ def build_export_payload(title: str, results: Dict[str, Any]) -> Dict[str, Any]:
         results["capacity"],
     )
     total_load = sum(row["load_kg"] for row in route_summaries)
+    feasible = results.get("feasible")
+    feasibility = {
+        "status": (
+            "FEASIBLE_DISPATCH"
+            if feasible is True
+            else "INFEASIBLE_DIAGNOSTIC"
+            if feasible is False
+            else "UNVERIFIED"
+        ),
+        "feasible": feasible,
+        **results.get("feasibility", {}),
+    }
 
     return {
         "title": title,
@@ -53,6 +65,7 @@ def build_export_payload(title: str, results: Dict[str, Any]) -> Dict[str, Any]:
         "total_km": round(float(results["total"]), 2),
         "runtime_seconds": round(float(results.get("time", 0.0)), 2),
         "total_load_kg": total_load,
+        "feasibility": feasibility,
         "routes": results["routes"],
         "route_summaries": route_summaries,
         "history": results.get("history", []),

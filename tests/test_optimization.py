@@ -1,8 +1,10 @@
 import json
 
 import numpy as np
+import pytest
 
 from src.optimization import (
+    InfeasibleRoutingProblem,
     decode_chromosome,
     evaluate_manual_baseline,
     greedy_baseline,
@@ -11,7 +13,13 @@ from src.optimization import (
     run_ga,
 )
 import src.optimization as optimization_module
+import src.research_validation as research_validation
 from src.utils import get_route_load
+
+
+def _zero_distance_resources():
+    size = len(optimization_module.BARANGAYS) + 1
+    return np.zeros((size, size)), optimization_module._build_point_index()
 
 def test_greedy_baseline_simple():
     """Verify greedy baseline correctly partitions selected barangays and returns valid distances."""
@@ -129,6 +137,214 @@ def test_run_ga_handles_empty_selection():
     assert history == []
 
 
+def test_run_ga_preserves_empty_waste_mapping_default_fallback():
+    distance_matrix, point_to_index = _zero_distance_resources()
+    routes, _, _, _ = run_ga(
+        ["Amsic"], 1, 4, 2, 0.05, 0.8,
+        vehicle_capacity_kg=4000,
+        waste_dict={},
+        distance_matrix=distance_matrix,
+        point_to_index=point_to_index,
+    )
+
+    assert routes == [["Amsic"]]
+
+
+@pytest.mark.parametrize(
+    ("selected", "waste", "message"),
+    [
+        (["Unknown Zone"], {"Unknown Zone": 1}, "unknown barangay"),
+        ([f"Unknown {index}" for index in range(34)], {}, "cannot exceed 33"),
+        (["Amsic", "Amsic"], {"Amsic": 1}, "duplicate"),
+        (["Amsic", "Anunas"], {"Amsic": 1}, "missing waste"),
+        (["Amsic"], {"Amsic": -1}, "non-negative"),
+        (["Amsic"], {"Amsic": float("nan")}, "finite"),
+        (["Amsic"], {"Amsic": float("inf")}, "finite"),
+        (["Amsic"], {"Amsic": "heavy"}, "numeric"),
+    ],
+)
+def test_run_ga_rejects_invalid_stops_and_waste(selected, waste, message):
+    distance_matrix, point_to_index = _zero_distance_resources()
+    with pytest.raises(ValueError, match=message):
+        run_ga(
+            selected, 1, 4, 2, 0.05, 0.8, vehicle_capacity_kg=2000, waste_dict=waste,
+            distance_matrix=distance_matrix, point_to_index=point_to_index,
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"n_vehicles": 0}, "n_vehicles must be a positive integer"),
+        ({"n_vehicles": -1}, "n_vehicles must be a positive integer"),
+        ({"vehicle_capacity_kg": 0}, "vehicle_capacity_kg must be a positive finite number"),
+        ({"vehicle_capacity_kg": float("inf")}, "vehicle_capacity_kg must be a positive finite number"),
+        ({"pop_size": 1}, "pop_size must be an integer of at least 2"),
+        ({"generations": 0}, "generations must be a positive integer"),
+        ({"mutation_rate": -0.1}, "mutation_rate must be finite and between 0 and 1"),
+        ({"crossover_rate": 1.1}, "crossover_rate must be finite and between 0 and 1"),
+        ({"early_stopping_patience": 0}, "early_stopping_patience must be a positive integer"),
+        ({"early_stopping_min_delta": -0.1}, "early_stopping_min_delta must be finite and non-negative"),
+        ({"n_vehicles": 26}, "n_vehicles must not exceed 25"),
+        ({"pop_size": 501}, "pop_size must not exceed 500"),
+        ({"generations": 1001}, "generations must not exceed 1000"),
+        ({"vehicle_capacity_kg": 20001}, "vehicle_capacity_kg must not exceed 20000 kg"),
+    ],
+)
+def test_run_ga_rejects_invalid_numeric_parameters(overrides, message):
+    params = {
+        "n_vehicles": 1,
+        "pop_size": 4,
+        "generations": 2,
+        "mutation_rate": 0.05,
+        "crossover_rate": 0.8,
+        "vehicle_capacity_kg": 2000,
+    }
+    params.update(overrides)
+    distance_matrix, point_to_index = _zero_distance_resources()
+    with pytest.raises(ValueError, match=message):
+        run_ga(["Amsic"], **params, distance_matrix=distance_matrix, point_to_index=point_to_index)
+
+
+def test_run_ga_rejects_infeasible_demand_with_stable_reasons_and_details():
+    distance_matrix, point_to_index = _zero_distance_resources()
+    with pytest.raises(ValueError) as caught:
+        run_ga(
+            ["Amsic", "Anunas"], 2, 4, 2, 0.05, 0.8,
+            vehicle_capacity_kg=1000,
+            waste_dict={"Amsic": 1001, "Anunas": 1001},
+            distance_matrix=distance_matrix,
+            point_to_index=point_to_index,
+        )
+
+    error = caught.value
+    assert isinstance(error, InfeasibleRoutingProblem)
+    assert error.reason_codes == [
+        "stop_exceeds_vehicle_capacity",
+        "total_demand_exceeds_fleet_capacity",
+    ]
+    assert error.details == {
+        "oversized_stops": [
+            {"barangay": "Amsic", "waste_kg": 1001},
+            {"barangay": "Anunas", "waste_kg": 1001},
+        ],
+        "vehicle_capacity_kg": 1000,
+        "total_demand_kg": 2002,
+        "fleet_capacity_kg": 2000,
+    }
+
+
+def test_run_ga_rejects_total_infeasibility_without_oversized_stops():
+    distance_matrix, point_to_index = _zero_distance_resources()
+    with pytest.raises(ValueError) as caught:
+        run_ga(
+            ["Amsic", "Anunas", "Balibago"], 2, 4, 2, 0.05, 0.8,
+            vehicle_capacity_kg=1000,
+            waste_dict={"Amsic": 700, "Anunas": 700, "Balibago": 700},
+            distance_matrix=distance_matrix,
+            point_to_index=point_to_index,
+        )
+
+    assert caught.value.reason_codes == ["total_demand_exceeds_fleet_capacity"]
+    assert caught.value.details["total_demand_kg"] == 2100
+    assert caught.value.details["fleet_capacity_kg"] == 2000
+
+
+def test_run_ga_rejects_oversized_stop_when_total_fleet_capacity_is_sufficient():
+    distance_matrix, point_to_index = _zero_distance_resources()
+    with pytest.raises(ValueError) as caught:
+        run_ga(
+            ["Amsic", "Anunas"], 3, 4, 2, 0.05, 0.8,
+            vehicle_capacity_kg=1000,
+            waste_dict={"Amsic": 1001, "Anunas": 1001},
+            distance_matrix=distance_matrix,
+            point_to_index=point_to_index,
+        )
+
+    assert caught.value.reason_codes == ["stop_exceeds_vehicle_capacity"]
+    assert caught.value.details["fleet_capacity_kg"] == 3000
+
+
+def test_run_ga_can_return_an_explicit_infeasible_diagnostic_when_allowed():
+    distance_matrix, point_to_index = _zero_distance_resources()
+    status = {}
+
+    routes, _, _, _ = run_ga(
+        ["Amsic"], 1, 4, 2, 0.05, 0.8,
+        vehicle_capacity_kg=1000,
+        waste_dict={"Amsic": 1001},
+        distance_matrix=distance_matrix,
+        point_to_index=point_to_index,
+        run_status=status,
+        allow_infeasible=True,
+    )
+
+    assert routes == [["Amsic"]]
+    assert status["input_feasible"] is False
+    assert status["input_reason_codes"] == [
+        "stop_exceeds_vehicle_capacity",
+        "total_demand_exceeds_fleet_capacity",
+    ]
+    assert status["feasible"] is False
+    assert status["all_selected_stops_once"] is True
+    assert status["all_routes_within_capacity"] is False
+    assert status["reason_codes"] == ["route_exceeds_vehicle_capacity"]
+    assert status["overloaded_routes"] == [{"vehicle": 1, "load_kg": 1001.0}]
+
+
+def test_run_ga_accepts_exact_capacity_boundary():
+    distance_matrix, point_to_index = _zero_distance_resources()
+    routes, _, _, _ = run_ga(
+        ["Amsic", "Anunas"], 2, 4, 2, 0.05, 0.8,
+        vehicle_capacity_kg=1000,
+        waste_dict={"Amsic": 1000, "Anunas": 1000},
+        distance_matrix=distance_matrix,
+        point_to_index=point_to_index,
+    )
+
+    assert sorted(stop for route in routes for stop in route) == ["Amsic", "Anunas"]
+
+
+def test_run_benchmark_rejects_infeasibility_before_building_seeds(monkeypatch):
+    seed_builder_called = False
+
+    def record_seed_build(*args, **kwargs):
+        nonlocal seed_builder_called
+        seed_builder_called = True
+        return [["Amsic"]]
+
+    monkeypatch.setattr(optimization_module, "build_seed_chromosomes", record_seed_build)
+    with pytest.raises(ValueError) as caught:
+        run_benchmark(
+            ["Amsic"], 1, 4, 2, 0.05, 0.8,
+            vehicle_capacity_kg=1000,
+            waste_dict={"Amsic": 1001},
+            runs=1,
+        )
+
+    assert isinstance(caught.value, InfeasibleRoutingProblem)
+    assert seed_builder_called is False
+
+
+def test_sensitivity_analysis_displays_infeasible_error(monkeypatch):
+    errors = []
+
+    def fail_benchmark(*args, **kwargs):
+        raise ValueError("Infeasible route request: total demand exceeds fleet capacity")
+
+    monkeypatch.setattr(research_validation.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(research_validation.st, "button", lambda *args, **kwargs: True)
+    monkeypatch.setattr(research_validation.st, "info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(research_validation.st, "error", errors.append)
+    monkeypatch.setattr(research_validation, "run_benchmark", fail_benchmark)
+
+    research_validation.run_sensitivity_analysis_tab(
+        ["Amsic"], 1, 4, 2, 0.05, 0.8, 1000, None, None, {}, {"Amsic": 1001}, 0
+    )
+
+    assert errors == ["Cannot run sensitivity analysis: Infeasible route request: total demand exceeds fleet capacity"]
+
+
 def test_run_ga_single_vehicle_stays_complete():
     """Single-vehicle runs should keep all stops assigned exactly once."""
     selected = ["Amsic", "Anunas", "Balibago"]
@@ -139,7 +355,7 @@ def test_run_ga_single_vehicle_stays_complete():
         generations=4,
         mutation_rate=0.05,
         crossover_rate=0.8,
-        vehicle_capacity_kg=10000,
+        vehicle_capacity_kg=13000,
     )
 
     assert len(routes) == 1
@@ -173,8 +389,8 @@ def test_run_benchmark_is_reproducible():
     """Benchmark totals should be deterministic for a fixed base seed."""
     selected = ["Amsic", "Anunas", "Balibago"]
 
-    first = run_benchmark(selected, 2, 10, 4, 0.05, 0.8, base_seed=99, runs=3)
-    second = run_benchmark(selected, 2, 10, 4, 0.05, 0.8, base_seed=99, runs=3)
+    first = run_benchmark(selected, 2, 10, 4, 0.05, 0.8, vehicle_capacity_kg=10000, base_seed=99, runs=3)
+    second = run_benchmark(selected, 2, 10, 4, 0.05, 0.8, vehicle_capacity_kg=10000, base_seed=99, runs=3)
 
     assert first["totals"] == second["totals"]
     assert first["seeds"] == [99, 100, 101]
@@ -255,7 +471,10 @@ def test_run_benchmark_reuses_seed_chromosomes(monkeypatch):
     monkeypatch.setattr(optimization_module, "greedy_baseline", fake_greedy)
     monkeypatch.setattr(optimization_module, "evaluate_manual_baseline", fake_manual)
 
-    benchmark = run_benchmark(["Amsic", "Anunas"], 1, 6, 2, 0.05, 0.8, base_seed=7, runs=3)
+    benchmark = run_benchmark(
+        ["Amsic", "Anunas"], 1, 6, 2, 0.05, 0.8,
+        vehicle_capacity_kg=6000, base_seed=7, runs=3,
+    )
 
     assert benchmark["seeds"] == [7, 8, 9]
     assert call_counts == {"greedy": 1, "manual": 1}
@@ -287,6 +506,7 @@ def test_run_ga_caches_duplicate_chromosome_fitness(monkeypatch):
         generations=4,
         mutation_rate=0.0,
         crossover_rate=0.0,
+        waste_dict={stop: 100 for stop in selected},
         random_seed=11,
         seed_chromosomes=[selected[:], selected[:]],
     )
@@ -326,6 +546,7 @@ def test_run_benchmark_reuses_route_distance_cache_across_runs(monkeypatch):
         generations=4,
         mutation_rate=0.0,
         crossover_rate=0.0,
+        waste_dict={stop: 100 for stop in selected},
         base_seed=7,
         runs=3,
     )
@@ -358,7 +579,10 @@ def test_run_benchmark_marks_overloaded_routes_infeasible(monkeypatch):
     selected = ["Amsic", "Anunas"]
     monkeypatch.setattr(optimization_module, "run_ga", lambda *args, **kwargs: ([selected[:]], [1.0], 1.0, []))
     monkeypatch.setattr(optimization_module, "build_seed_chromosomes", lambda *args, **kwargs: [selected[:], selected[:]])
-    result = run_benchmark(selected, 1, 2, 3, 0.0, 0.0, vehicle_capacity_kg=100, runs=1)
+    result = run_benchmark(
+        selected, 2, 2, 3, 0.0, 0.0, vehicle_capacity_kg=100,
+        waste_dict={"Amsic": 60, "Anunas": 60}, runs=1,
+    )
     assert result["feasible"] == [False]
 
 
@@ -370,7 +594,38 @@ def test_run_ga_cooperative_timeout_returns_best_route(monkeypatch):
     routes, _, _, _ = run_ga(
         selected, 1, 4, 3, 0.0, 0.0, random_seed=1,
         seed_chromosomes=[selected[:], selected[:]], timeout_seconds=1.0,
+        vehicle_capacity_kg=6000,
         run_status=status,
     )
     assert sorted(stop for route in routes for stop in route) == sorted(selected)
+    assert status["timed_out"] is True
+
+
+def test_run_ga_marks_deadline_expiring_during_finalization_as_timed_out(monkeypatch):
+    selected = ["Amsic", "Anunas"]
+    distance_matrix, point_to_index = _zero_distance_resources()
+    status = {}
+    now = [10.0]
+    monkeypatch.setattr(optimization_module.time, "monotonic", lambda: now[0])
+
+    def expire_during_two_opt(route, road_graph, distance_matrix, point_to_index):
+        now[0] = 12.0
+        return route
+
+    monkeypatch.setattr(optimization_module, "two_opt", expire_during_two_opt)
+    result = run_ga(
+        selected, 1, 4, 1, 0.0, 0.0,
+        vehicle_capacity_kg=1000,
+        waste_dict={stop: 100 for stop in selected},
+        distance_matrix=distance_matrix,
+        point_to_index=point_to_index,
+        seed_chromosomes=[selected[:], selected[:]],
+        timeout_seconds=1.0,
+        run_status=status,
+    )
+
+    assert len(result) == 4
+    routes, _, total_distance, _ = result
+    assert sorted(stop for route in routes for stop in route) == sorted(selected)
+    assert total_distance == 0.0
     assert status["timed_out"] is True
