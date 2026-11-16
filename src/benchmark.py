@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import platform
 import statistics
 import subprocess
@@ -15,8 +16,15 @@ from typing import Any
 
 import numpy as np
 
-from src.data import BARANGAYS, BARANGAY_WASTE_KG, DEFAULT_BARANGAY_COORDS, DEPOT, DEPOT_COORD
-from src.optimization import EARLY_STOP_MIN_DELTA, EARLY_STOP_PATIENCE, greedy_baseline, run_ga
+from src.data import BARANGAY_WASTE_KG, BARANGAYS, DEFAULT_BARANGAY_COORDS, DEPOT, DEPOT_COORD
+from src.optimization import (
+    EARLY_STOP_MIN_DELTA,
+    EARLY_STOP_PATIENCE,
+    InfeasibleRoutingProblem,
+    greedy_baseline,
+    run_ga,
+    validate_ga_inputs,
+)
 from src.utils import get_route_load, haversine
 
 BENCHMARK_STOPS = ("Amsic", "Anunas", "Balibago", "Capaya", "Claro M. Recto", "Cuayan")
@@ -70,6 +78,218 @@ def _route_feasibility(routes: list[list[str]], waste_dict: dict[str, int]) -> d
 
 def _is_feasible(feasibility: dict[str, Any]) -> bool:
     return bool(feasibility["all_selected_stops_once"] and feasibility["all_routes_within_capacity"] and feasibility["route_count"] <= BENCHMARK_VEHICLES)
+
+
+def _cpu_family() -> str | None:
+    processor = platform.processor().strip()
+    generic_processors = {
+        "arm", "arm64", "aarch64", "amd64", "i386", "i686", "x86_64", "unknown",
+    }
+    if processor and processor.casefold() not in generic_processors | {platform.machine().casefold()}:
+        return processor
+
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True, text=True, check=True, timeout=1,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            return processor or None
+        return result.stdout.strip() or processor or None
+    if platform.system() == "Linux":
+        try:
+            cpu_info = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return processor or None
+        entries: dict[str, str] = {}
+        for line in cpu_info.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip().casefold() in {"model name", "hardware", "processor"}:
+                entries.setdefault(key.strip().casefold(), value.strip())
+        for key in ("model name", "hardware", "processor"):
+            value = entries.get(key)
+            if value and not value.isdigit():
+                return value
+    if platform.system() == "Windows":
+        return os.environ.get("PROCESSOR_IDENTIFIER") or processor or None
+    return processor or None
+
+
+def _runtime_environment() -> dict[str, Any]:
+    return {
+        "python": platform.python_version(),
+        "numpy": np.__version__,
+        "operating_system": {
+            "name": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+        },
+        "architecture": platform.machine(),
+        "cpu_family": _cpu_family(),
+        "logical_cpu_count": os.cpu_count(),
+    }
+
+
+def _evaluation_case(
+    name: str,
+    selected_stops: list[str],
+    waste_kg_by_barangay: dict[str, int],
+    vehicles: int,
+    capacity_kg: int,
+    distance_matrix: np.ndarray,
+    point_to_index: dict[str, int],
+    *,
+    allow_infeasible: bool = False,
+) -> dict[str, Any]:
+    seed = 42
+    solver_configuration = {
+        "seed": seed,
+        "population": 4,
+        "generations": 2,
+        "mutation_rate": MUTATION_RATE,
+        "crossover_rate": CROSSOVER_RATE,
+        "early_stopping_patience": EARLY_STOP_PATIENCE,
+        "early_stopping_min_delta": EARLY_STOP_MIN_DELTA,
+        "timeout_seconds": None,
+        "allow_infeasible": allow_infeasible,
+    }
+    inputs = {
+        "selected_barangays": selected_stops,
+        "waste_kg_by_barangay": waste_kg_by_barangay,
+        "vehicles": vehicles,
+        "vehicle_capacity_kg": capacity_kg,
+        "distance_model": "Haversine from built-in default coordinates",
+        "coordinates": {
+            stop: list(DEFAULT_BARANGAY_COORDS[stop])
+            for stop in selected_stops
+            if stop in DEFAULT_BARANGAY_COORDS
+        },
+        "depot": {"name": DEPOT, "coordinates": list(DEPOT_COORD)},
+    }
+    fingerprint_payload = {
+        "name": name,
+        "input": inputs,
+        "solver": solver_configuration,
+    }
+    canonical = json.dumps(
+        fingerprint_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    )
+    input_fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    validation_started = time.perf_counter()
+    try:
+        validate_ga_inputs(
+            selected_stops,
+            n_vehicles=vehicles,
+            pop_size=solver_configuration["population"],
+            generations=solver_configuration["generations"],
+            mutation_rate=MUTATION_RATE,
+            crossover_rate=CROSSOVER_RATE,
+            vehicle_capacity_kg=capacity_kg,
+            waste_dict=waste_kg_by_barangay,
+            timeout_seconds=solver_configuration["timeout_seconds"],
+            early_stopping_patience=EARLY_STOP_PATIENCE,
+            early_stopping_min_delta=EARLY_STOP_MIN_DELTA,
+            allow_infeasible=allow_infeasible,
+        )
+    except InfeasibleRoutingProblem as error:
+        elapsed = time.perf_counter() - validation_started
+        return {
+            "input": inputs,
+            "configuration": solver_configuration,
+            "input_fingerprint": input_fingerprint,
+            "outcome": "INFEASIBLE_INPUT",
+            "input_validation": {
+                "valid": True,
+                "feasible": False,
+                "reason_codes": error.reason_codes,
+                "details": error.details,
+            },
+            "solver_result": None,
+            "validation_runtime_seconds": round(elapsed, 6),
+        }
+    except ValueError as error:
+        elapsed = time.perf_counter() - validation_started
+        return {
+            "input": inputs,
+            "configuration": solver_configuration,
+            "input_fingerprint": input_fingerprint,
+            "outcome": "REJECTED_INVALID_INPUT",
+            "input_validation": {
+                "valid": False,
+                "feasible": None,
+                "reason_codes": [],
+                "details": {},
+                "error": {"type": type(error).__name__, "message": str(error)},
+            },
+            "solver_result": None,
+            "validation_runtime_seconds": round(elapsed, 6),
+        }
+
+    status: dict[str, Any] = {}
+    started = time.perf_counter()
+    routes, _, total_distance, _ = run_ga(
+        selected_stops,
+        n_vehicles=vehicles,
+        pop_size=solver_configuration["population"],
+        generations=solver_configuration["generations"],
+        mutation_rate=MUTATION_RATE,
+        crossover_rate=CROSSOVER_RATE,
+        vehicle_capacity_kg=capacity_kg,
+        waste_dict=waste_kg_by_barangay,
+        road_graph=None,
+        distance_matrix=distance_matrix,
+        point_to_index=point_to_index,
+        random_seed=seed,
+        run_status=status,
+        early_stopping_patience=EARLY_STOP_PATIENCE,
+        early_stopping_min_delta=EARLY_STOP_MIN_DELTA,
+        allow_infeasible=allow_infeasible,
+    )
+    elapsed = time.perf_counter() - started
+    input_validation = {
+        "valid": True,
+        "feasible": status["input_feasible"],
+        "reason_codes": status["input_reason_codes"],
+        "details": status["input_details"],
+    }
+    solver_result = {
+        "feasible": status["feasible"],
+        "reason_codes": status["reason_codes"],
+        "overloaded_routes": status["overloaded_routes"],
+        "route_count": len(routes),
+        "route_loads_kg": [float(get_route_load(route, waste_kg_by_barangay)) for route in routes],
+        "route_distance_km": round(float(total_distance), 2),
+        "runtime_seconds": round(elapsed, 6),
+    }
+    return {
+        "input": inputs,
+        "configuration": solver_configuration,
+        "input_fingerprint": input_fingerprint,
+        "outcome": "FEASIBLE_RESULT" if status["feasible"] else "INFEASIBLE_DIAGNOSTIC",
+        "input_validation": input_validation,
+        "solver_result": solver_result,
+    }
+
+
+def _fixed_evaluation_cases(
+    distance_matrix: np.ndarray, point_to_index: dict[str, int],
+) -> dict[str, dict[str, Any]]:
+    specifications = (
+        ("capacity_constrained", ["Amsic", "Anunas"], {"Amsic": 1000, "Anunas": 1000}, 2, 1000, False),
+        ("infeasible_demand", ["Amsic", "Anunas", "Balibago"], {"Amsic": 700, "Anunas": 700, "Balibago": 700}, 2, 1000, True),
+        ("invalid_input", ["Unknown Zone"], {"Unknown Zone": 100}, 1, 1000, False),
+        ("oversized_stop", ["Amsic"], {"Amsic": 1001}, 1, 1000, True),
+    )
+    return {
+        name: _evaluation_case(
+            name, selected_stops, waste, vehicles, capacity,
+            distance_matrix, point_to_index, allow_infeasible=allow_infeasible,
+        )
+        for name, selected_stops, waste, vehicles, capacity, allow_infeasible in specifications
+    }
 
 
 def _benchmark_distances() -> tuple[np.ndarray, dict[str, int]]:
@@ -226,8 +446,8 @@ def run_fixed_benchmark(timeout_seconds: float | None = None, *, source_output_p
         }
     base = scenarios["base"]
     return {
-        "schema_version": 2, "source": source,
-        "runtime_environment": {"python": platform.python_version(), "numpy": np.__version__},
+        "schema_version": 3, "source": source,
+        "runtime_environment": _runtime_environment(),
         "benchmark": "fixed-seed GA vs. greedy baseline demand sensitivity",
         "distance_model": "Haversine from built-in default coordinates; saved coordinate edits and live routing are ignored",
         "data_note": "Bundled waste values are illustrative estimates, not validated operational measurements.",
@@ -242,6 +462,7 @@ def run_fixed_benchmark(timeout_seconds: float | None = None, *, source_output_p
             "timeout_semantics": "The per-run deadline starts at invocation; setup before the first generation check and an active generation cannot be interrupted, so runtime may exceed the budget in either case. The best-so-far route is retained.",
         },
         "baseline": base["baseline"], "optimizer": base["optimizer"], "scenarios": scenarios,
+        "evaluation_cases": _fixed_evaluation_cases(distance_matrix, point_to_index),
     }
 
 

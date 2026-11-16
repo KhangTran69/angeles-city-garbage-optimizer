@@ -14,7 +14,7 @@ from src.data import DEPOT_COORD, BARANGAY_COORDS, DEPOT, GOOGLE_ROUTES
 from src.config import DEFAULT_TRUCK_HEIGHT, VEHICLE_COLORS, ORS_BASE_URL
 from src.logger import log_api_call, logger
 
-MAP_CACHE_VERSION = "2026-10-19-map-cache-v5"
+MAP_CACHE_VERSION = "2026-11-16-map-feasibility-height-v1"
 FULL_FLEET_MAX_ROUTE_POINTS = 120
 
 
@@ -154,6 +154,7 @@ def _build_vehicle_popup_html(
     vehicle_idx: int,
     distance_km: float,
     waste_dict: Optional[Dict[str, int]] = None,
+    route_status: str = "Dispatch",
 ) -> str:
     """Render a clickable route summary card for full-fleet selection."""
     total_load = sum((waste_dict or {}).get(stop, 0) for stop in route)
@@ -163,7 +164,7 @@ def _build_vehicle_popup_html(
 
     return f"""
     <div style='font-family:sans-serif; min-width:210px;'>
-        <div style='background:{color}; color:white; padding:10px; border-radius:8px 8px 0 0; font-weight:700;'>🚛 Vehicle {vehicle_idx + 1} Dispatch</div>
+        <div style='background:{color}; color:white; padding:10px; border-radius:8px 8px 0 0; font-weight:700;'>🚛 Vehicle {vehicle_idx + 1} {html.escape(route_status)}</div>
         <div style='padding:12px; background:white; border:1px solid #ddd; border-top:none; border-radius:0 0 8px 8px; font-size:12px; line-height:1.5;'>
             <b>Distance:</b> {distance_km:.2f} km<br>
             <b>Stops:</b> {len(route)} | <b>Load:</b> {total_load} kg<br>
@@ -186,12 +187,20 @@ def build_folium_route_map(
     simulation_time_min: int = 9999,
     ors_key: str = "",
     truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
+    feasible: Optional[bool] = None,
 ) -> Any:
     """Create an interactive Tactical Dashboard Map with Realistic Road Routing."""
     import folium
     from folium import plugins
 
     is_full_fleet_view = view_mode == "all" and len(routes) > 1
+    route_status = (
+        "Dispatch"
+        if feasible is True
+        else "Diagnostic Candidate"
+        if feasible is False
+        else "Unverified Candidate"
+    )
     m = folium.Map(
         location=DEPOT_COORD, 
         zoom_start=13, 
@@ -223,7 +232,7 @@ def build_folium_route_map(
     for i, route in to_render:
         if not route: continue
         color = colors[i % len(colors)]
-        group = folium.FeatureGroup(name=f"🚛 Vehicle {i+1} Dispatch")
+        group = folium.FeatureGroup(name=f"🚛 Vehicle {i+1} {route_status}")
         
         full_stops = [DEPOT] + route + [DEPOT]
         base_coords = [list(BARANGAY_COORDS.get(s, DEPOT_COORD) if s != DEPOT else DEPOT_COORD) for s in full_stops]
@@ -244,10 +253,15 @@ def build_folium_route_map(
         route_tooltip = f"Vehicle {i+1} • {len(route)} stops • {distance_km:.2f} km"
         if ors_key and not road_coords:
             route_tooltip += " • ORS route unavailable; showing stop-to-stop geometry"
-        route_popup_html = _build_vehicle_popup_html(route, color, i, distance_km, waste_dict)
+        route_popup_html = _build_vehicle_popup_html(
+            route, color, i, distance_km, waste_dict, route_status
+        )
 
         if is_full_fleet_view:
             overview_coords = _reduce_route_coords(final_coords)
+            vehicle_marker_label = (
+                f"T-{i + 1}" if feasible is True else f"C-{i + 1}"
+            )
             folium.GeoJson(
                 data={
                     "type": "Feature",
@@ -272,7 +286,7 @@ def build_folium_route_map(
             ).add_to(group)
 
             dispatch_loc = overview_coords[len(overview_coords) // 2]
-            dispatch_icon_html = f"""
+            vehicle_icon_html = f"""
             <div style="
                 background:{color};
                 border:2px solid white;
@@ -288,17 +302,17 @@ def build_folium_route_map(
                 font-family:'Outfit', sans-serif;
                 box-shadow:0 4px 8px rgba(0,0,0,0.35);
                 padding:0 8px;
-            ">T-{i + 1}</div>
+            ">{vehicle_marker_label}</div>
             """
             folium.Marker(
                 location=dispatch_loc,
                 icon=folium.DivIcon(
                     icon_size=(38, 24),
                     icon_anchor=(19, 12),
-                    html=dispatch_icon_html,
+                    html=vehicle_icon_html,
                 ),
                 popup=folium.Popup(route_popup_html, max_width=280),
-                tooltip=folium.Tooltip(f"Open Vehicle {i+1} dispatch", sticky=False),
+                tooltip=folium.Tooltip(f"Open Vehicle {i+1} {route_status}", sticky=False),
             ).add_to(group)
         else:
             # Glow layer for focused single-truck inspection.
@@ -318,7 +332,11 @@ def build_folium_route_map(
                 pulse_color="#ffffff",
                 dash_array=[15, 30],
                 delay=1500,
-                tooltip=f"Optimized Road Route: Vehicle {i+1}"
+                tooltip=(
+                    f"Optimized Road Route: Vehicle {i+1}"
+                    if feasible is True
+                    else f"Route Candidate: Vehicle {i+1}"
+                )
             ).add_to(group)
 
         # 📍 Visual Stops & Popups
@@ -407,6 +425,7 @@ def build_map_cache_signature(
     waste_dict: Optional[Dict[str, int]] = None,
     ors_key: str = "",
     truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
+    feasible: Optional[bool] = None,
 ) -> str:
     """Create a stable signature so cached map files match the active optimization results."""
     payload = {
@@ -416,6 +435,7 @@ def build_map_cache_signature(
         "waste_dict": waste_dict or {},
         "ors_enabled": bool(ors_key),
         "truck_height_m": float(truck_height_m),
+        "feasible": feasible,
         "coords": BARANGAY_COORDS,
         "colors": VEHICLE_COLORS,
     }
@@ -445,10 +465,16 @@ def get_cached_map_view_html(
     ors_key: str = "",
     signature: str = "",
     truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
+    feasible: Optional[bool] = None,
 ) -> str:
     """Return a rendered map view from disk cache, writing it once on first use."""
     active_signature = signature or build_map_cache_signature(
-        routes, dists, waste_dict, ors_key, truck_height_m
+        routes,
+        dists,
+        waste_dict,
+        ors_key,
+        truck_height_m=truck_height_m,
+        feasible=feasible,
     )
     cache_path = get_map_view_cache_path(active_signature, view_mode)
     if os.path.exists(cache_path):
@@ -466,6 +492,7 @@ def get_cached_map_view_html(
         waste_dict=waste_dict,
         ors_key=ors_key,
         truck_height_m=truck_height_m,
+        feasible=feasible,
     )
     rendered_html = map_obj.get_root().render()
     temp_cache_path = f"{cache_path}.tmp"
@@ -487,6 +514,7 @@ def warm_cached_map_views(
     ors_key: str = "",
     signature: str = "",
     truck_height_m: float = DEFAULT_TRUCK_HEIGHT,
+    feasible: Optional[bool] = None,
 ) -> None:
     """Ensure a set of tactical map views has been rendered to disk."""
     for view_mode in view_modes:
@@ -502,6 +530,7 @@ def warm_cached_map_views(
             ors_key=ors_key,
             signature=signature,
             truck_height_m=truck_height_m,
+            feasible=feasible,
         )
 
 def compute_stop_schedule(

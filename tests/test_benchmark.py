@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,16 +11,17 @@ import pytest
 from src import data
 from src.benchmark import (
     BENCHMARK_CAPACITY_KG,
-    CROSSOVER_RATE,
     BENCHMARK_GENERATIONS,
     BENCHMARK_POPULATION,
     BENCHMARK_SEEDS,
     BENCHMARK_STOPS,
     BENCHMARK_VEHICLES,
+    CROSSOVER_RATE,
     EARLY_STOP_MIN_DELTA,
     EARLY_STOP_PATIENCE,
     MUTATION_RATE,
     _benchmark_distances,
+    _evaluation_case,
     _scenario_fingerprint,
     _scenario_waste,
     _source_identity,
@@ -65,7 +67,7 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
 
     monkeypatch.setattr(benchmark, "run_ga", recording_run_ga)
     report = run_fixed_benchmark(timeout_seconds=0.5)
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     revision = report["source"]["revision"]
     dirty = report["source"]["dirty"]
     if revision is None:
@@ -85,7 +87,7 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
     assert report["configuration"]["crossover_rate"] == CROSSOVER_RATE
     assert report["configuration"]["early_stopping_patience"] == EARLY_STOP_PATIENCE
     assert report["configuration"]["early_stopping_min_delta"] == EARLY_STOP_MIN_DELTA
-    assert len(early_stop_settings) == len(BENCHMARK_SEEDS) * 3
+    assert len(early_stop_settings) == len(BENCHMARK_SEEDS) * 3 + 3
     assert set(early_stop_settings) == {(EARLY_STOP_PATIENCE, EARLY_STOP_MIN_DELTA)}
     assert report["configuration"]["timeout_semantics"] == (
         "The per-run deadline starts at invocation; setup before the first generation check and an active "
@@ -97,8 +99,10 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
     assert len({scenario["input_fingerprint"] for scenario in scenarios.values()}) == 3
     for scenario in scenarios.values():
         assert len(scenario["optimizer"]["runs"]) == 3
+        assert scenario["baseline"]["route_distance_km"] >= 0
         assert scenario["baseline"]["feasibility"]
-        for run in scenario["optimizer"]["runs"]:
+        for seed, run in zip(BENCHMARK_SEEDS, scenario["optimizer"]["runs"], strict=True):
+            assert run["seed"] == seed
             assert run["route_distance_km"] >= 0
             assert run["runtime_seconds"] >= 0
             assert run["timeout_seconds"] == 0.5
@@ -106,6 +110,178 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
             assert "feasible" in run
         assert "feasibility_rate" in scenario["optimizer"]["summary"]
         assert "timeout_rate" in scenario["optimizer"]["summary"]
+
+
+def test_report_runtime_environment_includes_reference_hardware(monkeypatch) -> None:
+    from src import benchmark
+
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "TestOS")
+    monkeypatch.setattr(benchmark.platform, "release", lambda: "1.2.3")
+    monkeypatch.setattr(benchmark.platform, "version", lambda: "test build")
+    monkeypatch.setattr(benchmark.platform, "machine", lambda: "test-arch")
+    monkeypatch.setattr(benchmark.platform, "processor", lambda: "Test CPU family")
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+
+    environment = run_fixed_benchmark()["runtime_environment"]
+
+    assert environment["python"] == sys.version.split()[0]
+    assert environment["numpy"] == np.__version__
+    assert environment["operating_system"] == {
+        "name": "TestOS",
+        "release": "1.2.3",
+        "version": "test build",
+    }
+    assert environment["architecture"] == "test-arch"
+    assert environment["cpu_family"] == "Test CPU family"
+    assert environment["logical_cpu_count"] == 8
+
+
+def test_evaluation_case_does_not_misclassify_solver_value_error(monkeypatch) -> None:
+    from src import benchmark
+
+    distance_matrix, point_to_index = _benchmark_distances()
+
+    def fail_during_solver(*args, **kwargs):
+        raise ValueError("solver failed after input validation")
+
+    monkeypatch.setattr(benchmark, "run_ga", fail_during_solver)
+    with pytest.raises(ValueError, match="solver failed after input validation"):
+        _evaluation_case(
+            "capacity_constrained", ["Amsic"], {"Amsic": 1000}, 1, 1000,
+            distance_matrix, point_to_index,
+        )
+
+
+def test_evaluation_case_distinguishes_rejected_infeasibility_from_invalid_input() -> None:
+    distance_matrix, point_to_index = _benchmark_distances()
+
+    result = _evaluation_case(
+        "infeasible_demand", ["Amsic", "Anunas", "Balibago"],
+        {"Amsic": 700, "Anunas": 700, "Balibago": 700}, 2, 1000,
+        distance_matrix, point_to_index,
+    )
+
+    assert result["outcome"] == "INFEASIBLE_INPUT"
+    assert result["input_validation"]["valid"] is True
+    assert result["input_validation"]["feasible"] is False
+    assert result["input_validation"]["reason_codes"] == [
+        "total_demand_exceeds_fleet_capacity",
+    ]
+    assert result["input_validation"]["details"]["fleet_capacity_kg"] == 2000
+    assert result["validation_runtime_seconds"] >= 0
+    assert result["solver_result"] is None
+
+
+def test_report_includes_reproducible_capacity_and_input_outcomes() -> None:
+    report = run_fixed_benchmark(timeout_seconds=1e-12)
+
+    cases = report["evaluation_cases"]
+    assert set(cases) == {
+        "capacity_constrained",
+        "infeasible_demand",
+        "invalid_input",
+        "oversized_stop",
+    }
+    assert len({case["input_fingerprint"] for case in cases.values()}) == 4
+    assert all(len(case["input_fingerprint"]) == 64 for case in cases.values())
+
+    capacity = cases["capacity_constrained"]
+    assert capacity["input"] == {
+        "selected_barangays": ["Amsic", "Anunas"],
+        "waste_kg_by_barangay": {"Amsic": 1000, "Anunas": 1000},
+        "vehicles": 2,
+        "vehicle_capacity_kg": 1000,
+        "distance_model": "Haversine from built-in default coordinates",
+        "coordinates": {
+            "Amsic": list(data.DEFAULT_BARANGAY_COORDS["Amsic"]),
+            "Anunas": list(data.DEFAULT_BARANGAY_COORDS["Anunas"]),
+        },
+        "depot": {"name": data.DEPOT, "coordinates": list(data.DEPOT_COORD)},
+    }
+    assert capacity["configuration"] == {
+        "seed": 42,
+        "population": 4,
+        "generations": 2,
+        "mutation_rate": MUTATION_RATE,
+        "crossover_rate": CROSSOVER_RATE,
+        "early_stopping_patience": EARLY_STOP_PATIENCE,
+        "early_stopping_min_delta": EARLY_STOP_MIN_DELTA,
+        "timeout_seconds": None,
+        "allow_infeasible": False,
+    }
+    expected_cases = {
+        "capacity_constrained": (
+            ["Amsic", "Anunas"], {"Amsic": 1000, "Anunas": 1000}, 2, 1000,
+        ),
+        "infeasible_demand": (
+            ["Amsic", "Anunas", "Balibago"],
+            {"Amsic": 700, "Anunas": 700, "Balibago": 700}, 2, 1000,
+        ),
+        "invalid_input": (["Unknown Zone"], {"Unknown Zone": 100}, 1, 1000),
+        "oversized_stop": (["Amsic"], {"Amsic": 1001}, 1, 1000),
+    }
+    for name, (stops, waste, vehicles, vehicle_capacity) in expected_cases.items():
+        case = cases[name]
+        inputs = case["input"]
+        assert {
+            "selected_barangays": inputs["selected_barangays"],
+            "waste_kg_by_barangay": inputs["waste_kg_by_barangay"],
+            "vehicles": inputs["vehicles"],
+            "vehicle_capacity_kg": inputs["vehicle_capacity_kg"],
+        } == {
+            "selected_barangays": stops,
+            "waste_kg_by_barangay": waste,
+            "vehicles": vehicles,
+            "vehicle_capacity_kg": vehicle_capacity,
+        }
+        assert inputs["coordinates"] == {
+            stop: list(data.DEFAULT_BARANGAY_COORDS[stop])
+            for stop in stops
+            if stop in data.DEFAULT_BARANGAY_COORDS
+        }
+        assert inputs["depot"] == {
+            "name": data.DEPOT,
+            "coordinates": list(data.DEPOT_COORD),
+        }
+        assert case["configuration"] == {
+            **capacity["configuration"],
+            "allow_infeasible": name in {"infeasible_demand", "oversized_stop"},
+        }
+        assert len(case["input_fingerprint"]) == 64
+    assert capacity["outcome"] == "FEASIBLE_RESULT"
+    assert capacity["solver_result"]["feasible"] is True
+    assert sorted(capacity["solver_result"]["route_loads_kg"]) == [1000.0, 1000.0]
+
+    infeasible = cases["infeasible_demand"]
+    assert infeasible["input"]["waste_kg_by_barangay"] == {
+        "Amsic": 700, "Anunas": 700, "Balibago": 700,
+    }
+    assert infeasible["outcome"] == "INFEASIBLE_DIAGNOSTIC"
+    assert infeasible["input_validation"]["reason_codes"] == [
+        "total_demand_exceeds_fleet_capacity",
+    ]
+    assert infeasible["input_validation"]["details"]["fleet_capacity_kg"] == 2000
+    assert infeasible["solver_result"]["feasible"] is False
+
+    invalid = cases["invalid_input"]
+    assert invalid["outcome"] == "REJECTED_INVALID_INPUT"
+    assert invalid["input_validation"]["error"] == {
+        "type": "ValueError",
+        "message": "unknown barangay name(s): Unknown Zone",
+    }
+    assert invalid["validation_runtime_seconds"] >= 0
+    assert invalid["solver_result"] is None
+
+    oversized = cases["oversized_stop"]
+    assert oversized["outcome"] == "INFEASIBLE_DIAGNOSTIC"
+    assert oversized["input_validation"]["reason_codes"] == [
+        "stop_exceeds_vehicle_capacity",
+        "total_demand_exceeds_fleet_capacity",
+    ]
+    assert oversized["input_validation"]["details"]["oversized_stops"] == [
+        {"barangay": "Amsic", "waste_kg": 1001.0},
+    ]
+    assert oversized["solver_result"]["feasible"] is False
 
 
 def test_tiny_cooperative_timeout_keeps_best_so_far_metrics() -> None:
@@ -136,6 +312,9 @@ def test_cli_emits_json_with_timeout(tmp_path) -> None:
     result = subprocess.run([sys.executable, "-m", "src.benchmark", "--timeout-seconds", "0.5", "--json-out", str(output)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
+    assert report["schema_version"] == 3
+    assert report["evaluation_cases"]["capacity_constrained"]["outcome"] == "FEASIBLE_RESULT"
+    assert report["evaluation_cases"]["invalid_input"]["outcome"] == "REJECTED_INVALID_INPUT"
     assert report["configuration"]["timeout_seconds_per_ga_run"] == 0.5
     assert report["scenarios"]["base"]["optimizer"]["runs"][0]["timeout_seconds"] == 0.5
 

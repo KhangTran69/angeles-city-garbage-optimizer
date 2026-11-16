@@ -19,6 +19,7 @@ from typing import Dict, Optional, Any, List
 # ── Project Core ───────────────────────────────────────────────────────────────
 from src.config import *
 from src.data import *
+from src.optimization import InfeasibleRoutingProblem, validate_ga_inputs
 from src.experiment_store import *
 from src.reporting import *
 from src.logger import *
@@ -58,6 +59,10 @@ def render_export_section(results):
     """Modernized export section with better button grouping."""
     if not results:
         return
+    feasible = results.get("feasible")
+    if feasible is not True:
+        label = "infeasible diagnostic" if feasible is False else "unverified route result"
+        st.warning(f"This is an {label}; the Dispatch ZIP is disabled.")
     export_obj = build_export_payload(APP_TITLE, results)
     route_summary_rows = export_obj["route_summaries"]
     st.markdown("<div class='section-title'>📥 DATA EXPORT CONTROLS</div>", unsafe_allow_html=True)
@@ -66,9 +71,9 @@ def render_export_section(results):
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         c1.download_button(
-            "💾 Export JSON",
+            "💾 Export JSON" if feasible is True else "💾 Export Diagnostic JSON",
             json.dumps(export_obj, indent=2),
-            "ga_results.json",
+            "ga_results.json" if feasible is True else "diagnostic_routes.json",
             "application/json",
             use_container_width=True,
         )
@@ -76,11 +81,18 @@ def render_export_section(results):
         csv_rows = []
         for i, rt in enumerate(results["routes"]):
             for si, stop in enumerate(rt):
-                csv_rows.append({"Vehicle": i + 1, "Stop": si + 1, "Barangay": stop})
+                csv_rows.append(
+                    {
+                        "Feasibility": export_obj["feasibility"]["status"],
+                        "Vehicle": i + 1,
+                        "Stop": si + 1,
+                        "Barangay": stop,
+                    }
+                )
         c2.download_button(
-            "📊 Export CSV",
-            pd.DataFrame(csv_rows).to_csv(index=False),
-            "ga_routes.csv",
+            "📊 Export CSV" if feasible is True else "📊 Export Diagnostic CSV",
+            pd.DataFrame(csv_rows, columns=["Feasibility", "Vehicle", "Stop", "Barangay"]).to_csv(index=False),
+            "ga_routes.csv" if feasible is True else "diagnostic_routes.csv",
             "text/csv",
             use_container_width=True,
         )
@@ -106,8 +118,24 @@ def render_export_section(results):
             "dispatch.zip",
             "application/zip",
             use_container_width=True,
+            disabled=feasible is not True,
         )
         st.markdown("</div>", unsafe_allow_html=True)
+
+
+def route_feasibility_message(status, input_error=None, capacity=None):
+    """Summarize why a candidate route set cannot be treated as a dispatch."""
+    if input_error is not None:
+        return str(input_error)
+    if status.get("overloaded_routes"):
+        overloaded = ", ".join(
+            f"Truck {item['vehicle'] + 5} ({item['load_kg']:g} kg)"
+            for item in status["overloaded_routes"]
+        )
+        return f"{overloaded} exceed the {capacity:,} kg payload capacity."
+    if not status.get("all_selected_stops_once", False):
+        return "The optimizer did not assign every selected barangay exactly once."
+    return "The optimizer could not produce a feasible route set."
 
 
 # ── Hero Header ────────────────────────────────────────────────────────────────
@@ -265,15 +293,15 @@ with st.sidebar:
     n_vehicles = st.slider(
         "Fleet Size (Vehicles)",
         5,
-        25,
+        MAX_N_VEHICLES,
         DEFAULT_N_VEHICLES,
         help="The five core trucks are always included. Active service zones also need at least one supplementary truck.",
     )
     pop_size = st.select_slider(
-        "Population Size", options=[50, 100, 200, 300, 500], value=DEFAULT_POP_SIZE
+        "Population Size", options=[50, 100, 200, 300, MAX_POP_SIZE], value=DEFAULT_POP_SIZE
     )
     generations = st.select_slider(
-        "Evolution Cycles", options=[50, 100, 200, 500, 1000], value=DEFAULT_GENERATIONS
+        "Evolution Cycles", options=[50, 100, 200, 500, MAX_GENERATIONS], value=DEFAULT_GENERATIONS
     )
 
     with st.expander("🛠️ Advanced GA Tuning"):
@@ -292,7 +320,7 @@ with st.sidebar:
     )
     st.info("🚛 **Hybrid Fleet Note**: Truck 1-5 (Core) are fixed. GA settings only affect Truck 6+.")
     vehicle_capacity = st.number_input(
-        "Payload Capacity (kg)", 1000, 20000, DEFAULT_VEHICLE_CAPACITY_KG, 500
+        "Payload Capacity (kg)", 1000, MAX_VEHICLE_CAPACITY_KG, DEFAULT_VEHICLE_CAPACITY_KG, 500
     )
 
     with st.expander("📍 BARANGAY SELECTION", expanded=False):
@@ -392,6 +420,7 @@ with t1:
         total_supplementary_capacity = num_dynamic_calc * vehicle_capacity
         
         if total_selected_waste > total_supplementary_capacity * 1.3:
+            st.session_state.results = {}
             st.error(f"🚨 **Target Workload Exceeds Fleet Capacity (Limit: 130%)**")
             st.markdown(f"""
             The combined waste for selected active zones (**{total_selected_waste:,} kg**) exceeds the threshold 
@@ -405,6 +434,27 @@ with t1:
             st.info("💡 Genetic Algorithms require a mathematically feasible volume-to-capacity ratio to converge effectively.")
             st.stop()
 
+        input_infeasibility = None
+        try:
+            validate_ga_inputs(
+                selected,
+                max(1, num_dynamic_calc),
+                pop_size,
+                generations,
+                mutation_rate,
+                crossover_rate,
+                vehicle_capacity,
+                waste_dict,
+            )
+        except InfeasibleRoutingProblem as error:
+            # Keep the existing 130% workload policy; an under-threshold result
+            # can still be useful as a clearly labeled diagnostic candidate.
+            input_infeasibility = error
+        except ValueError as error:
+            st.session_state.results = {}
+            st.error(f"Cannot generate routes: {error}")
+            st.stop()
+
         # 1. Prepare CORE GSO FLEET (Fixed)
         core_routes = DETAILED_GSO_ROUTES
         core_dists = [12.16, 10.99, 17.08, 11.82, 13.46]
@@ -415,6 +465,17 @@ with t1:
         dynamic_total = 0.0
         history = [core_total]
         run_time = 0.1
+        dynamic_feasibility = {
+            "feasible": True,
+            "all_selected_stops_once": True,
+            "all_routes_within_capacity": True,
+            "reason_codes": [],
+            "overloaded_routes": [],
+            "input_feasible": True,
+            "input_reason_codes": [],
+            "input_details": {},
+        }
+        reason = ""
         
         # 2. Run DYNAMIC OPTIMIZATION (if barangays selected)
         if selected:
@@ -429,6 +490,7 @@ with t1:
             with st.spinner("Metaheuristic algorithm evolving supplemental paths..."):
                 from src.optimization import run_ga
                 start_time = time.time()
+                dynamic_feasibility = {}
                 dynamic_routes, dynamic_dists, dynamic_total, history = run_ga(
                     selected,
                     num_dynamic,
@@ -444,10 +506,18 @@ with t1:
                     dist_matrix,
                     pt_to_idx,
                     int(random_seed),
+                    run_status=dynamic_feasibility,
+                    allow_infeasible=input_infeasibility is not None,
                 )
                 end_time = time.time()
                 run_time = end_time - start_time
-            st.success(f"Dynamic Dispatch Active: {len(selected)} barangays assigned to Trucks 6-{5+len(dynamic_routes)}")
+            if dynamic_feasibility.get("feasible") is True:
+                st.success(f"Dynamic Dispatch Active: {len(selected)} barangays assigned to Trucks 6-{5+len(dynamic_routes)}")
+            else:
+                reason = route_feasibility_message(
+                    dynamic_feasibility, input_infeasibility, vehicle_capacity
+                )
+                st.warning(f"Diagnostic routes only — not a feasible dispatch. {reason}")
         else:
             st.info("Core Fleet Mode: No supplemental barangays selected. Rendering tactical baseline.")
 
@@ -486,6 +556,9 @@ with t1:
             "waste_dict": waste_dict,
             "capacity": vehicle_capacity,
             "route_summaries": route_summaries,
+            "feasible": dynamic_feasibility.get("feasible") is True,
+            "feasibility": dynamic_feasibility,
+            "feasibility_message": reason,
             "metadata": {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "random_seed": int(random_seed),
@@ -511,9 +584,18 @@ with t1:
 
     if st.session_state.results:
         res = st.session_state.results
+        feasible_dispatch = res.get("feasible") is True
         st.markdown(
-            "<div class='section-title'>🚛 OPTIMIZED FLEET DISPATCH</div>", unsafe_allow_html=True
+            "<div class='section-title'>🚛 OPTIMIZED FLEET DISPATCH</div>"
+            if feasible_dispatch
+            else "<div class='section-title'>⚠️ ROUTE DIAGNOSTIC</div>",
+            unsafe_allow_html=True,
         )
+        if not feasible_dispatch:
+            st.warning(
+                "Diagnostic routes only — not a feasible dispatch. "
+                + res.get("feasibility_message", "The route result is unverified.")
+            )
 
         # Overview glass card
         cols = st.columns(4)
@@ -545,9 +627,28 @@ with t1:
             sector = TRUCK_SECTORS.get(i + 1, "Optimization Area")
             
             # Fleet categorization
-            fleet_type = "CORE GSO FLEET" if i < 5 else "DYNAMIC DISPATCH"
-            status_tag = "ACTIVE DISPATCH" if rt_is_active else "STANDBY / OFF-DUTY"
-            status_color = "#69f0ae" if rt_is_active else "#ef9a9a"
+            if i < 5:
+                fleet_type = "CORE GSO FLEET" if feasible_dispatch else "CORE GSO CANDIDATE"
+                assignment_label, assignment = "DISPATCH", driver
+            elif feasible_dispatch:
+                fleet_type = "DYNAMIC DISPATCH"
+                assignment_label, assignment = "SECTOR", sector
+            else:
+                fleet_type = "DYNAMIC CANDIDATE"
+                assignment_label, assignment = "CANDIDATE SECTOR", sector
+
+            if not rt_is_active:
+                status_tag = "STANDBY / OFF-DUTY"
+            elif feasible_dispatch:
+                status_tag = "ACTIVE DISPATCH"
+            elif res.get("feasible") is False:
+                status_tag = "INFEASIBLE DIAGNOSTIC"
+            else:
+                status_tag = "UNVERIFIED ROUTE RESULT"
+
+            if not feasible_dispatch and i < 5:
+                assignment_label = "REFERENCE DRIVER"
+            status_color = "#69f0ae" if rt_is_active and feasible_dispatch else "#ef9a9a"
 
             st.markdown(
                 f"""
@@ -561,7 +662,7 @@ with t1:
                 </div>
                 <div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;'>
                     <div style='font-size:0.75rem; color:#81c784; font-family:"JetBrains Mono"; text-transform:uppercase;'>
-                        {f"DISPATCH: {driver}" if i < 5 else f"SECTOR: {sector}"}
+                        {assignment_label}: {assignment}
                     </div>
                     <div style='font-size:0.6rem; background:{status_color}; color:black; padding:2px 6px; border-radius:4px; font-weight:800;'>{status_tag}</div>
                 </div>
@@ -597,40 +698,65 @@ with t2:
         total = res["total"]
         baseline_total = round(total * (1 + p["baseline_overhead"] / 100), 2)
         saved_km = round(baseline_total - total, 2)
+        feasible_dispatch = res.get("feasible") is True
 
         st.markdown(
             "<div class='section-title'>💎 ECONOMIC & IMPACT ANALYSIS</div>", unsafe_allow_html=True
         )
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            render_metric(
-                "Estimated Savings",
-                f"₱{saved_km * p['fuel_per_km'] * p['diesel_price'] * p['working_days']:,.2f}",
-                f"↓ {p['baseline_overhead']:.2f}% vs GSO",
-                icon="💰",
-            )
-        with c2:
-            render_metric(
-                "Fuel Conservation",
-                f"{saved_km * p['fuel_per_km'] * p['working_days']:,.2f} L / Year",
-                "Energy Efficiency",
-                icon="⛽",
-            )
-        with c3:
-            render_metric(
-                "Carbon Mitigation",
-                f"{saved_km * p['fuel_per_km'] * CO2_PER_LITER_DIESEL * p['working_days']:,.2f} kg CO2",
-                "Environmental Impact",
-                icon="🌱",
+        if feasible_dispatch:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                render_metric(
+                    "Estimated Savings",
+                    f"₱{saved_km * p['fuel_per_km'] * p['diesel_price'] * p['working_days']:,.2f}",
+                    f"↓ {p['baseline_overhead']:.2f}% vs GSO",
+                    icon="💰",
+                )
+            with c2:
+                render_metric(
+                    "Fuel Conservation",
+                    f"{saved_km * p['fuel_per_km'] * p['working_days']:,.2f} L / Year",
+                    "Energy Efficiency",
+                    icon="⛽",
+                )
+            with c3:
+                render_metric(
+                    "Carbon Mitigation",
+                    f"{saved_km * p['fuel_per_km'] * CO2_PER_LITER_DIESEL * p['working_days']:,.2f} kg CO2",
+                    "Environmental Impact",
+                    icon="🌱",
+                )
+        else:
+            st.info(
+                "Diagnostic route candidates only. Savings, fuel, and carbon reductions "
+                "are unavailable until the route set is feasible."
             )
 
         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.markdown("### Performance vs Sector-Based Baselines")
-        table_html = "<table class='comparison-table' style='width:100%'><thead><tr><th>Vehicle</th><th>Load (kg)</th><th>Optimized Path</th><th>Reduction</th></tr></thead><tbody>"
+        st.markdown(
+            "### Performance vs Sector-Based Baselines"
+            if feasible_dispatch
+            else "### Diagnostic Route Candidates"
+        )
+        path_heading = "Optimized Path" if feasible_dispatch else "Candidate Path"
+        reduction_heading = "<th>Reduction</th>" if feasible_dispatch else ""
+        table_html = (
+            "<table class='comparison-table' style='width:100%'><thead><tr>"
+            f"<th>Vehicle</th><th>Load (kg)</th><th>{path_heading}</th>"
+            f"{reduction_heading}</tr></thead><tbody>"
+        )
         for i, (rt, dk) in enumerate(zip(res["routes"], res["dists"])):
-            saved = dk * (p["baseline_overhead"] / 100)
-            table_html += f"<tr><td>Unit {i + 1}</td><td>{get_route_load(rt, res['waste_dict']):.2f} kg</td><td><span class='badge badge-green'>{dk:.2f} km</span></td><td><span style='color:#69f0ae'>↓ {saved:.2f} km</span></td></tr>"
+            path_badge = "badge-green" if feasible_dispatch else "badge-red"
+            table_html += (
+                f"<tr><td>Unit {i + 1}</td>"
+                f"<td>{get_route_load(rt, res['waste_dict']):.2f} kg</td>"
+                f"<td><span class='badge {path_badge}'>{dk:.2f} km</span></td>"
+            )
+            if feasible_dispatch:
+                saved = dk * (p["baseline_overhead"] / 100)
+                table_html += f"<td><span style='color:#69f0ae'>↓ {saved:.2f} km</span></td>"
+            table_html += "</tr>"
         table_html += "</tbody></table>"
         st.markdown(table_html, unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -740,6 +866,13 @@ with t3:
 with t4:
     res = get_results()
     if res:
+        result_feasibility = res.get("feasible")
+        feasible_dispatch = result_feasibility is True
+        diagnostic_label = (
+            "INFEASIBLE ROUTE CANDIDATE"
+            if result_feasibility is False
+            else "UNVERIFIED ROUTE CANDIDATE"
+        )
         road_graph, dist_matrix, pt_to_idx = load_core_resources()
         nv = len(res["routes"])
         view = st.session_state.map_route_view
@@ -754,12 +887,21 @@ with t4:
             res["waste_dict"],
             ORS_API_KEY,
             truck_height_m=truck_h,
+            feasible=result_feasibility,
         )
         st.session_state.map_cache_signature = map_cache_signature
 
         st.markdown(
-            "<div class='section-title'>🖥️ TACTICAL DISPATCH DASHBOARD</div>", unsafe_allow_html=True
+            "<div class='section-title'>🖥️ TACTICAL DISPATCH DASHBOARD</div>"
+            if feasible_dispatch
+            else "<div class='section-title'>⚠️ TACTICAL ROUTE DIAGNOSTIC</div>",
+            unsafe_allow_html=True,
         )
+        if not feasible_dispatch:
+            explanation = res.get("feasibility_message") or "Feasibility has not been confirmed."
+            st.warning(
+                f"{diagnostic_label.title()} — candidate routes only, not a dispatch. {explanation}"
+            )
 
         # 📊 Tier 1: Global Status Bar (Full Width Metrics)
         m_col1, m_col2, m_col3 = st.columns(3)
@@ -771,12 +913,20 @@ with t4:
             with m_col2:
                 render_metric("Total Fleet Load", f"{total_load} kg", icon="⚖️")
             with m_col3:
-                render_metric("Active Vehicles", f"{nv}", icon="🚛")
+                render_metric(
+                    "Active Vehicles" if feasible_dispatch else "Candidate Routes",
+                    f"{nv}",
+                    icon="🚛",
+                )
         else:
             rt = res["routes"][view]
             dk = res["dists"][view]
             with m_col1:
-                render_metric("Dispatch Path", f"{dk:.2f} km", icon="🛣️")
+                render_metric(
+                    "Dispatch Path" if feasible_dispatch else "Candidate Path",
+                    f"{dk:.2f} km",
+                    icon="🛣️",
+                )
             with m_col2:
                 render_metric(
                     "Current Load", f"{get_route_load(rt, res['waste_dict'])} kg", icon="⚖️"
@@ -794,7 +944,9 @@ with t4:
 
             # 🛠️ Mission Control Group
             st.markdown(
-                "<div style='font-size:0.75rem; font-weight:700; color:#69f0ae; letter-spacing:1px; margin-bottom:15px;'>🎮 MISSION CONTROL</div>",
+                "<div style='font-size:0.75rem; font-weight:700; color:#69f0ae; letter-spacing:1px; margin-bottom:15px;'>🎮 MISSION CONTROL</div>"
+                if feasible_dispatch
+                else "<div style='font-size:0.75rem; font-weight:700; color:#ef9a9a; letter-spacing:1px; margin-bottom:15px;'>🔎 ROUTE REVIEW</div>",
                 unsafe_allow_html=True,
             )
 
@@ -810,18 +962,26 @@ with t4:
                     unsafe_allow_html=True,
                 )
 
-            sim_time = st.slider("Route Progress (Min)", 0, 300, 300, key="sim_timeline")
+            sim_time = st.slider(
+                "Route Progress (Min)" if feasible_dispatch else "Candidate Review Point (Min)",
+                0,
+                300,
+                300,
+                key="sim_timeline",
+            )
 
             # 🚛 Dispatcher Selectors
             st.markdown(
-                "<div style='font-size:0.7rem; color:#81c784; margin-top:20px; margin-bottom:10px;'>VEHICLE SELECTOR</div>",
+                "<div style='font-size:0.7rem; color:#81c784; margin-top:20px; margin-bottom:10px;'>VEHICLE SELECTOR</div>"
+                if feasible_dispatch
+                else "<div style='font-size:0.7rem; color:#ef9a9a; margin-top:20px; margin-bottom:10px;'>CANDIDATE ROUTE SELECTOR</div>",
                 unsafe_allow_html=True,
             )
             btn_cols = st.columns(3)
             for i in range(nv):
                 with btn_cols[i % 3]:
                     if st.button(
-                        f"T-{i + 1}",
+                        f"T-{i + 1}" if feasible_dispatch else f"C-{i + 1}",
                         key=f"t_btn_{i}",
                         use_container_width=True,
                         type="primary" if view == i else "secondary",
@@ -829,7 +989,7 @@ with t4:
                         st.session_state.map_route_view = i
                         st.rerun()
             if st.button(
-                "🌎 FULL FLEET",
+                "🌎 FULL FLEET" if feasible_dispatch else "🌎 ALL CANDIDATES",
                 use_container_width=True,
                 type="primary" if view == "all" else "secondary",
             ):
@@ -837,30 +997,34 @@ with t4:
                 st.rerun()
 
             if view != "all":
-                # Detailed Dispatch Card (Driver & Sector)
+                # Keep candidate route details visibly separate from dispatch details.
                 driver = res.get("route_summaries", [{}])[view].get("driver", TRUCK_DRIVERS.get(view+1, "Staff Driver"))
                 sector = res.get("route_summaries", [{}])[view].get("sector", TRUCK_SECTORS.get(view+1, "Standard Sector"))
+                detail_status = "OPERATIONAL DISPATCH" if feasible_dispatch else diagnostic_label
+                detail_color = "#69f0ae" if feasible_dispatch else "#ef9a9a"
+                detail_driver_label = "Driver" if feasible_dispatch else "Reference Driver"
+                detail_sector_label = "Sector" if feasible_dispatch else "Reference Sector"
                 
                 st.markdown(
                     f"""
-                    <div style='background:rgba(255,255,255,0.05); border-radius:12px; padding:20px; border:1px solid rgba(105,240,174,0.2); margin-top:20px;'>
-                        <div style='color:#69f0ae; font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:1px;'>OPERATIONAL DISPATCH</div>
+                    <div style='background:rgba(255,255,255,0.05); border-radius:12px; padding:20px; border:1px solid {detail_color}55; margin-top:20px;'>
+                        <div style='color:{detail_color}; font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:1px;'>{detail_status}</div>
                         <div style='font-size:1.4rem; font-weight:800; color:white; margin:5px 0;'>TRUCK {view + 1}</div>
                         <div style='display:flex; gap:15px; margin-top:10px;'>
                             <div>
-                                <div style='font-size:0.6rem; color:#81c784; text-transform:uppercase;'>Driver</div>
-                                <div style='font-size:0.9rem; font-weight:600; color:#69f0ae;'>{driver}</div>
+                                <div style='font-size:0.6rem; color:#81c784; text-transform:uppercase;'>{detail_driver_label}</div>
+                                <div style='font-size:0.9rem; font-weight:600; color:{detail_color};'>{driver}</div>
                             </div>
                             <div>
-                                <div style='font-size:0.6rem; color:#81c784; text-transform:uppercase;'>Sector</div>
-                                <div style='font-size:0.9rem; font-weight:600; color:#69f0ae;'>{sector}</div>
+                                <div style='font-size:0.6rem; color:#81c784; text-transform:uppercase;'>{detail_sector_label}</div>
+                                <div style='font-size:0.9rem; font-weight:600; color:{detail_color};'>{sector}</div>
                             </div>
                         </div>
                         {f'''<div style='margin-top:15px; padding-top:15px; border-top:1px solid rgba(105,240,174,0.1);'>
                             <a href='{GOOGLE_MAPS_LINKS[view+1]}' target='_blank' style='text-decoration:none; color:#69f0ae; font-size:0.8rem; display:flex; align-items:center; gap:8px;'>
                                 🗺️ View Official Route in Google Maps
                             </a>
-                        </div>''' if GOOGLE_MAPS_LINKS.get(view+1) else ""}
+                        </div>''' if feasible_dispatch and GOOGLE_MAPS_LINKS.get(view+1) else ""}
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -868,7 +1032,9 @@ with t4:
 
             # 📍 Stop Registry (Scrollable)
             st.markdown(
-                "<div style='margin-top:25px; font-size:0.75rem; font-weight:700; color:#69f0ae;'>📍 DISPATCH REGISTRY</div>",
+                "<div style='margin-top:25px; font-size:0.75rem; font-weight:700; color:#69f0ae;'>📍 DISPATCH REGISTRY</div>"
+                if feasible_dispatch
+                else "<div style='margin-top:25px; font-size:0.75rem; font-weight:700; color:#ef9a9a;'>📍 CANDIDATE STOP LIST</div>",
                 unsafe_allow_html=True,
             )
             if view != "all":
@@ -927,6 +1093,7 @@ with t4:
                         ors_key=ORS_API_KEY,
                         signature=map_cache_signature,
                         truck_height_m=truck_h,
+                        feasible=result_feasibility,
                     )
 
             cached_map_html = get_cached_map_view_html(
@@ -941,6 +1108,7 @@ with t4:
                 ORS_API_KEY,
                 map_cache_signature,
                 truck_height_m=truck_h,
+                feasible=result_feasibility,
             )
             components.html(cached_map_html, height=650, scrolling=False)
     else:
@@ -1036,41 +1204,46 @@ with t7:
         st.markdown("<div class='section-title'>📏 BENCHMARK MODE</div>", unsafe_allow_html=True)
         if st.button("📐 Run Benchmark Suite", type="primary"):
             from src.optimization import run_benchmark
-            benchmark = run_benchmark(
-                selected,
-                n_vehicles,
-                pop_size,
-                generations,
-                mutation_rate,
-                crossover_rate,
-                vehicle_capacity,
-                waste_dict,
-                road_graph,
-                dist_matrix,
-                pt_to_idx,
-                int(res["params"]["random_seed"]),
-                benchmark_runs,
-            )
-            st.session_state.benchmark_results = benchmark
-            append_experiment_record(
-                {
-                    "timestamp": datetime.now().isoformat(timespec="seconds"),
-                    "type": "benchmark",
-                    "total_km": round(float(benchmark["mean_total"]), 2),
-                    "runtime_seconds": None,
-                    "params": res["params"],
-                    "benchmark": {
-                        "seeds": benchmark["seeds"],
-                        "mean_total": benchmark["mean_total"],
-                        "std_total": benchmark["std_total"],
-                        "best_total": benchmark["best_total"],
-                        "worst_total": benchmark["worst_total"],
-                    },
-                }
-            )
+            try:
+                benchmark = run_benchmark(
+                    selected,
+                    n_vehicles,
+                    pop_size,
+                    generations,
+                    mutation_rate,
+                    crossover_rate,
+                    vehicle_capacity,
+                    waste_dict,
+                    road_graph,
+                    dist_matrix,
+                    pt_to_idx,
+                    int(res["params"]["random_seed"]),
+                    benchmark_runs,
+                )
+            except ValueError as error:
+                st.session_state.benchmark_results = {}
+                st.error(f"Cannot run benchmark: {error}")
+            else:
+                st.session_state.benchmark_results = benchmark
+                append_experiment_record(
+                    {
+                        "timestamp": datetime.now().isoformat(timespec="seconds"),
+                        "type": "benchmark",
+                        "total_km": round(float(benchmark["mean_total"]), 2),
+                        "runtime_seconds": None,
+                        "params": res["params"],
+                        "benchmark": {
+                            "seeds": benchmark["seeds"],
+                            "mean_total": benchmark["mean_total"],
+                            "std_total": benchmark["std_total"],
+                            "best_total": benchmark["best_total"],
+                            "worst_total": benchmark["worst_total"],
+                        },
+                    }
+                )
         if st.session_state.get("benchmark_results"):
             benchmark = st.session_state.benchmark_results
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
                 render_metric("Benchmark Mean", f"{benchmark['mean_total']:.2f} km", icon="📊")
             with c2:
@@ -1079,8 +1252,20 @@ with t7:
                 render_metric("Best Seed", f"{benchmark['best_total']:.2f} km", icon="🏁")
             with c4:
                 render_metric("Worst Seed", f"{benchmark['worst_total']:.2f} km", icon="⚠️")
+            with c5:
+                render_metric(
+                    "Feasible Runs",
+                    f"{benchmark['feasible_run_count']}/{len(benchmark['feasible'])}",
+                    f"{benchmark['feasibility_rate']:.0%} of seeds",
+                    icon="✅" if benchmark["feasibility_rate"] == 1.0 else "⚠️",
+                )
             benchmark_df = pd.DataFrame(
-                {"Seed": benchmark["seeds"], "Total Distance (km)": benchmark["totals"]}
+                {
+                    "Seed": benchmark["seeds"],
+                    "Total Distance (km)": benchmark["totals"],
+                    "Feasible": benchmark["feasible"],
+                    "Timed Out": benchmark["timed_out"],
+                }
             )
             st.dataframe(benchmark_df, hide_index=True, use_container_width=True)
             st.line_chart(benchmark_df.set_index("Seed"))

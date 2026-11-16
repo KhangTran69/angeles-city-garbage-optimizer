@@ -8,13 +8,16 @@ import hashlib
 import json
 import time
 from math import isfinite
+from numbers import Integral, Real
 import numpy as np
 import streamlit as st
 from typing import List, Tuple, Dict, Any, Optional
+from collections.abc import Mapping
 
 from src.config import (
     DISTANCE_MATRIX_PATH, GRAPH_PATH, OSM_BBOX, 
-    DEFAULT_VEHICLE_CAPACITY_KG, CVRP_OVERLOAD_PENALTY_PER_KG
+    DEFAULT_VEHICLE_CAPACITY_KG, CVRP_OVERLOAD_PENALTY_PER_KG,
+    MAX_GENERATIONS, MAX_N_VEHICLES, MAX_POP_SIZE, MAX_VEHICLE_CAPACITY_KG,
 )
 from src.data import BARANGAYS, DEPOT, BARANGAY_WASTE_KG
 from src.utils import (
@@ -24,6 +27,174 @@ from src.utils import (
 
 EARLY_STOP_PATIENCE = 30
 EARLY_STOP_MIN_DELTA = 0.05
+
+
+class InfeasibleRoutingProblem(ValueError):
+    """A validly formed routing request whose demand cannot fit the requested fleet."""
+
+    def __init__(self, reason_codes: List[str], details: Dict[str, Any]) -> None:
+        self.reason_codes = reason_codes
+        self.details = details
+        messages = []
+        if "stop_exceeds_vehicle_capacity" in reason_codes:
+            oversized = ", ".join(
+                f"{item['barangay']} ({item['waste_kg']:g} kg)"
+                for item in details["oversized_stops"]
+            )
+            messages.append(
+                f"stops exceed vehicle capacity of {details['vehicle_capacity_kg']:g} kg: {oversized}; "
+                "increase payload capacity so each selected stop fits"
+            )
+        if "total_demand_exceeds_fleet_capacity" in reason_codes:
+            messages.append(
+                f"total selected demand ({details['total_demand_kg']:g} kg) exceeds "
+                f"fleet capacity ({details['fleet_capacity_kg']:g} kg); add vehicles or increase capacity"
+            )
+        super().__init__("Infeasible route request: " + "; ".join(messages))
+
+
+def _require_integer(name: str, value: Any, minimum: int, maximum: Optional[int] = None) -> None:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < minimum:
+        if minimum == 1:
+            message = f"{name} must be a positive integer"
+        else:
+            message = f"{name} must be an integer of at least {minimum}"
+        raise ValueError(message)
+    if maximum is not None and int(value) > maximum:
+        raise ValueError(f"{name} must not exceed {maximum}")
+
+
+def _require_finite_number(name: str, value: Any, predicate: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be numeric and finite")
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        raise ValueError(f"{name} must be numeric and finite") from None
+    if not isfinite(numeric):
+        if predicate == "positive":
+            raise ValueError(f"{name} must be a positive finite number")
+        if predicate == "non_negative":
+            raise ValueError(f"{name} must be finite and non-negative")
+        raise ValueError(f"{name} must be finite and between 0 and 1")
+    if predicate == "positive" and numeric <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+    if predicate == "non_negative" and numeric < 0:
+        raise ValueError(f"{name} must be finite and non-negative")
+    if predicate == "unit_interval" and not 0 <= numeric <= 1:
+        raise ValueError(f"{name} must be finite and between 0 and 1")
+    return numeric
+
+
+def validate_ga_inputs(
+    selected_barangays: List[str],
+    n_vehicles: int,
+    pop_size: int,
+    generations: int,
+    mutation_rate: float,
+    crossover_rate: float,
+    vehicle_capacity_kg: int,
+    waste_dict: Optional[Dict[str, int]] = None,
+    timeout_seconds: Optional[float] = None,
+    early_stopping_patience: int = EARLY_STOP_PATIENCE,
+    early_stopping_min_delta: float = EARLY_STOP_MIN_DELTA,
+    allow_infeasible: bool = False,
+) -> Dict[str, int]:
+    """Validate solver inputs and return the effective waste mapping."""
+    _require_integer("n_vehicles", n_vehicles, 1, MAX_N_VEHICLES)
+    _require_integer("pop_size", pop_size, 2, MAX_POP_SIZE)
+    _require_integer("generations", generations, 1, MAX_GENERATIONS)
+    _require_integer("early_stopping_patience", early_stopping_patience, 1, MAX_GENERATIONS)
+    _require_finite_number("vehicle_capacity_kg", vehicle_capacity_kg, "positive")
+    if vehicle_capacity_kg > MAX_VEHICLE_CAPACITY_KG:
+        raise ValueError(f"vehicle_capacity_kg must not exceed {MAX_VEHICLE_CAPACITY_KG} kg")
+    _require_finite_number("mutation_rate", mutation_rate, "unit_interval")
+    _require_finite_number("crossover_rate", crossover_rate, "unit_interval")
+    _require_finite_number("early_stopping_min_delta", early_stopping_min_delta, "non_negative")
+    if timeout_seconds is not None:
+        _require_finite_number("timeout_seconds", timeout_seconds, "positive")
+
+    if not isinstance(selected_barangays, (list, tuple)):
+        raise ValueError("selected_barangays must be a list of barangay names")
+    if len(selected_barangays) > len(BARANGAYS):
+        raise ValueError(f"selected_barangays cannot exceed {len(BARANGAYS)} known barangays")
+    selected = list(selected_barangays)
+    if any(not isinstance(name, str) for name in selected):
+        raise ValueError("selected barangays must be names from the known barangays")
+    unknown = [name for name in selected if name not in BARANGAYS]
+    if unknown:
+        raise ValueError(f"unknown barangay name(s): {', '.join(unknown)}")
+    if len(set(selected)) != len(selected):
+        raise ValueError("selected barangays must not contain duplicates")
+
+    if waste_dict is not None and not isinstance(waste_dict, Mapping):
+        raise ValueError("waste_dict must be a mapping of barangay names to waste values")
+    effective_waste = BARANGAY_WASTE_KG if not waste_dict else waste_dict
+    selected_waste: Dict[str, float] = {}
+    for name in selected:
+        if name not in effective_waste:
+            raise ValueError(f"missing waste value for selected barangay {name}")
+        selected_waste[name] = _require_finite_number(
+            f"waste for {name}", effective_waste[name], "non_negative"
+        )
+
+    total_demand = sum(selected_waste.values())
+    if not isfinite(total_demand):
+        raise ValueError("total selected waste must be finite")
+    fleet_capacity = n_vehicles * float(vehicle_capacity_kg)
+    oversized_stops = [
+        {"barangay": name, "waste_kg": selected_waste[name]}
+        for name in selected
+        if selected_waste[name] > vehicle_capacity_kg
+    ]
+    reason_codes = []
+    if oversized_stops:
+        reason_codes.append("stop_exceeds_vehicle_capacity")
+    if total_demand > fleet_capacity:
+        reason_codes.append("total_demand_exceeds_fleet_capacity")
+    if reason_codes and not allow_infeasible:
+        raise InfeasibleRoutingProblem(
+            reason_codes,
+            {
+                "oversized_stops": oversized_stops,
+                "vehicle_capacity_kg": vehicle_capacity_kg,
+                "total_demand_kg": total_demand,
+                "fleet_capacity_kg": fleet_capacity,
+            },
+        )
+    return effective_waste
+
+
+def assess_route_feasibility(
+    routes: List[List[str]],
+    selected_barangays: List[str],
+    waste_dict: Dict[str, int],
+    vehicle_capacity_kg: int,
+) -> Dict[str, Any]:
+    """Report whether a returned route set assigns every stop once within capacity."""
+    assigned = [stop for route in routes for stop in route]
+    all_selected_stops_once = (
+        len(assigned) == len(selected_barangays)
+        and sorted(assigned) == sorted(selected_barangays)
+    )
+    overloaded_routes = [
+        {"vehicle": index, "load_kg": float(load)}
+        for index, route in enumerate(routes, start=1)
+        if (load := get_route_load(route, waste_dict)) > vehicle_capacity_kg
+    ]
+    all_routes_within_capacity = not overloaded_routes
+    reason_codes = []
+    if not all_selected_stops_once:
+        reason_codes.append("selected_stops_not_assigned_exactly_once")
+    if overloaded_routes:
+        reason_codes.append("route_exceeds_vehicle_capacity")
+    return {
+        "feasible": all_selected_stops_once and all_routes_within_capacity,
+        "all_selected_stops_once": all_selected_stops_once,
+        "all_routes_within_capacity": all_routes_within_capacity,
+        "reason_codes": reason_codes,
+        "overloaded_routes": overloaded_routes,
+    }
 
 def _build_point_index() -> Dict[str, int]:
     """Create the shared depot/barangay lookup used by the distance matrix."""
@@ -268,18 +439,48 @@ def run_ga(
     road_graph=None, distance_matrix: Optional[np.ndarray] = None, point_to_index: Optional[Dict[str, int]] = None,
     random_seed: Optional[int] = None, seed_chromosomes: Optional[List[List[str]]] = None,
     route_distance_cache: Optional[Dict[Tuple[str, ...], float]] = None,
-    timeout_seconds: Optional[float] = None, run_status: Optional[Dict[str, bool]] = None,
+    timeout_seconds: Optional[float] = None, run_status: Optional[Dict[str, Any]] = None,
     early_stopping_patience: int = EARLY_STOP_PATIENCE,
     early_stopping_min_delta: float = EARLY_STOP_MIN_DELTA,
+    allow_infeasible: bool = False,
 ) -> Tuple[List[List[str]], List[float], float, List[float]]:
     """Execute CVRP solver with Seeding (Greedy + Manual GSO)."""
-    if timeout_seconds is not None and (not isfinite(timeout_seconds) or timeout_seconds <= 0):
-        raise ValueError("timeout_seconds must be positive and finite")
-    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    validation_args = (
+        selected_barangays,
+        n_vehicles,
+        pop_size,
+        generations,
+        mutation_rate,
+        crossover_rate,
+        vehicle_capacity_kg,
+        waste_dict,
+        timeout_seconds,
+        early_stopping_patience,
+        early_stopping_min_delta,
+    )
+    input_infeasibility = None
+    try:
+        w_dict = validate_ga_inputs(*validation_args)
+    except InfeasibleRoutingProblem as error:
+        if not allow_infeasible:
+            raise
+        input_infeasibility = error
+        w_dict = validate_ga_inputs(*validation_args, allow_infeasible=True)
     if run_status is not None:
-        run_status["timed_out"] = False
+        run_status.update(
+            {
+                "timed_out": False,
+                "input_feasible": input_infeasibility is None,
+                "input_reason_codes": input_infeasibility.reason_codes if input_infeasibility else [],
+                "input_details": input_infeasibility.details if input_infeasibility else {},
+            }
+        )
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
     if not selected_barangays:
-        return [[] for _ in range(n_vehicles)], [0.0 for _ in range(n_vehicles)], 0.0, []
+        empty_routes = [[] for _ in range(n_vehicles)]
+        if run_status is not None:
+            run_status.update(assess_route_feasibility(empty_routes, selected_barangays, w_dict, vehicle_capacity_kg))
+        return empty_routes, [0.0 for _ in range(n_vehicles)], 0.0, []
 
     rng = random.Random(random_seed)
     fitness_cache: Dict[Tuple[int, ...], float] = {}
@@ -296,8 +497,6 @@ def run_ga(
         pt_idx = point_to_index if point_to_index else {}
         
     depot_idx = pt_idx.get(DEPOT, 0)
-    w_dict = waste_dict if waste_dict else BARANGAY_WASTE_KG
-    
     # Global index maps for selected barangays
     id_to_name = {i: name for i, name in enumerate([DEPOT] + BARANGAYS)}
     name_to_id = {name: i for i, name in id_to_name.items()}
@@ -420,6 +619,10 @@ def run_ga(
         if route_distance_cache is not None:
             route_distance_cache[route_key] = distance
         final_dists.append(distance)
+    if run_status is not None:
+        run_status.update(assess_route_feasibility(final_routes, selected_barangays, w_dict, vehicle_capacity_kg))
+        if deadline is not None and not run_status["timed_out"] and time.monotonic() >= deadline:
+            run_status["timed_out"] = True
     return final_routes, final_dists, float(sum(final_dists)), history
 
 
@@ -440,8 +643,17 @@ def run_benchmark(
     timeout_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Execute a reproducible benchmark suite across sequential seeds."""
-    if timeout_seconds is not None and (not isfinite(timeout_seconds) or timeout_seconds <= 0):
-        raise ValueError("timeout_seconds must be positive and finite")
+    effective_waste = validate_ga_inputs(
+        selected_barangays,
+        n_vehicles,
+        pop_size,
+        generations,
+        mutation_rate,
+        crossover_rate,
+        vehicle_capacity_kg,
+        waste_dict,
+        timeout_seconds,
+    )
     seeds = [base_seed + offset for offset in range(max(1, runs))]
     totals: List[float] = []
     histories: List[List[float]] = []
@@ -453,14 +665,14 @@ def run_benchmark(
         selected_barangays,
         n_vehicles,
         vehicle_capacity_kg,
-        waste_dict,
+        effective_waste,
         road_graph,
         distance_matrix,
         point_to_index,
     )
 
     for seed in seeds:
-        status: Dict[str, bool] = {}
+        status: Dict[str, Any] = {}
         started = time.monotonic()
         routes, _, total, history = run_ga(
             selected_barangays,
@@ -472,7 +684,7 @@ def run_benchmark(
             None,
             None,
             vehicle_capacity_kg,
-            waste_dict,
+            effective_waste,
             road_graph,
             distance_matrix,
             point_to_index,
@@ -489,7 +701,7 @@ def run_benchmark(
             and sorted(flattened) == sorted(selected_barangays)
         )
         within_capacity = all(
-            get_route_load(route, waste_dict or BARANGAY_WASTE_KG) <= vehicle_capacity_kg
+            get_route_load(route, effective_waste) <= vehicle_capacity_kg
             for route in routes
         )
         feasibility.append(complete_assignment and within_capacity)
