@@ -58,9 +58,12 @@ On first run, the app may download the Angeles City road network from OpenStreet
 
 The tactical map works without an API key using the bundled coordinates and local route data. To enable optional ORS road-curved routing, copy `.env.example` to `.env` and add an `ORS_API_KEY`. For Streamlit hosting, add the same value as a secret named `ORS_API_KEY`.
 
-GPX uploads are limited to 10 MiB per file. The waypoint TSP page accepts up to
-five files at a time, with at most 25,000 track or route points and 50 waypoints
-per file.
+GPX uploads are limited to 10 MiB per file. The waypoint TSP page rejects runs
+with more than five files before parsing or routing; each processed file is
+limited to 25,000 track or route points and 50 waypoints. The five-file check
+runs after Streamlit receives the selected files, so it does not limit upload
+ingress count or aggregate upload memory. Deployments that need those limits
+must enforce them at the hosting or proxy layer.
 
 ## Project Structure
 
