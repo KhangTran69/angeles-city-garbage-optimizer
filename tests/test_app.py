@@ -84,9 +84,21 @@ def test_feasible_run_renders_active_dispatch_and_enables_zip(monkeypatch, tmp_p
     def fail_if_routing_fallback_is_used(*args, **kwargs):
         raise AssertionError("The mocked local matrix should avoid routing fallbacks.")
 
-    monkeypatch.setattr(optimization_module, "load_road_network", fail_if_routing_fallback_is_used)
-    monkeypatch.setattr(optimization_module, "get_distance_matrix", fail_if_routing_fallback_is_used)
-    monkeypatch.setattr(experiment_store, "append_experiment_record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        optimization_module,
+        "load_road_network",
+        fail_if_routing_fallback_is_used,
+    )
+    monkeypatch.setattr(
+        optimization_module,
+        "get_distance_matrix",
+        fail_if_routing_fallback_is_used,
+    )
+    monkeypatch.setattr(
+        experiment_store,
+        "append_experiment_record",
+        lambda *args, **kwargs: None,
+    )
     map_html = []
     cache_dir = tmp_path / "map-cache-feasible"
     cache_dir.mkdir(exist_ok=True)
@@ -150,3 +162,55 @@ def test_empty_selection_with_five_core_trucks_skips_dynamic_input_validation(mo
     assert not app.exception
     assert app.session_state["results"]["feasible"] is True
     assert len(app.session_state["results"]["routes"]) == 5
+
+
+def test_rejected_small_fleet_clears_previous_dispatch(monkeypatch, tmp_path):
+    matrix_size = len(optimization_module.BARANGAYS) + 1
+    distance_matrix = np.ones((matrix_size, matrix_size))
+    np.fill_diagonal(distance_matrix, 0)
+    point_index = optimization_module._build_point_index()
+    monkeypatch.setattr(
+        optimization_module,
+        "load_cached_distance_matrix",
+        lambda: (distance_matrix, point_index),
+    )
+
+    def fail_if_routing_fallback_is_used(*args, **kwargs):
+        raise AssertionError("routing fallback was not expected")
+
+    monkeypatch.setattr(optimization_module, "load_road_network", fail_if_routing_fallback_is_used)
+    monkeypatch.setattr(optimization_module, "get_distance_matrix", fail_if_routing_fallback_is_used)
+    monkeypatch.setattr(experiment_store, "append_experiment_record", lambda *args, **kwargs: None)
+    cache_dir = tmp_path / "map-cache-small-fleet"
+    cache_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(map_utils, "_map_cache_dir", lambda: str(cache_dir))
+    monkeypatch.setattr(components, "html", lambda *args, **kwargs: None)
+
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(str(app_path), default_timeout=30).run()
+    app.checkbox[1].set_value(False).run()
+    app.multiselect[0].set_value(["Capaya"]).run()
+    run_button = next(
+        button for button in app.button if button.label == "🚀 EXECUTE OPTIMIZATION"
+    )
+    run_button.click().run()
+    assert app.session_state["results"]["feasible"] is True
+
+    fleet_size = next(
+        slider for slider in app.slider if slider.label == "Fleet Size (Vehicles)"
+    )
+    fleet_size.set_value(5).run()
+    run_button = next(
+        button for button in app.button if button.label == "🚀 EXECUTE OPTIMIZATION"
+    )
+    run_button.click().run()
+
+    assert any("need at least 6 vehicles" in item.value for item in app.error)
+    assert app.session_state["results"] == {}
+
+    fleet_size = next(
+        slider for slider in app.slider if slider.label == "Fleet Size (Vehicles)"
+    )
+    fleet_size.set_value(6).run()
+    assert app.session_state["results"] == {}
+    assert not any("OPTIMIZED FLEET DISPATCH" in item.value for item in app.markdown)

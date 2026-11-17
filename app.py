@@ -409,6 +409,7 @@ with t1:
         
         # 0. Capacity Validation Safeguard (User Requested: Block if > 130%)
         if selected and n_vehicles < 6:
+            st.session_state.results = {}
             st.error(
                 "Active service zones need at least 6 vehicles: the five fixed core trucks "
                 "plus one supplementary truck. Increase Fleet Size before running optimization."
