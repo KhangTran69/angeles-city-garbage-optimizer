@@ -30,6 +30,10 @@ STOP_SPEED_THRESHOLD_KMH = 1.0
 STOP_MIN_DURATION_SECONDS = 5 * 60
 NODE_DEDUPLICATION_METERS = 60.0
 SIMPLIFICATION_TOLERANCE_METERS = 20.0
+MAX_WAYPOINT_TSP_GPX_FILES = 5
+MAX_WAYPOINT_TSP_WAYPOINTS = 50
+MAX_WAYPOINT_TSP_TRACK_POINTS = 25_000
+MAX_GPX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 def _haversine_km(coord_a: Coordinate, coord_b: Coordinate) -> float:
@@ -56,6 +60,28 @@ def _haversine_km(coord_a: Coordinate, coord_b: Coordinate) -> float:
 def _path_distance_km(path: Sequence[Coordinate]) -> float:
     """Sum segment distances across a coordinate path."""
     return sum(_haversine_km(path[idx - 1], path[idx]) for idx in range(1, len(path)))
+
+
+def _gpx_recorded_distance_km(gpx: GPX, fallback_path: Sequence[Coordinate]) -> float:
+    """Sum recorded GPX paths without joining separate tracks or segments."""
+    track_paths = [
+        [(float(point.latitude), float(point.longitude)) for point in segment.points]
+        for track in gpx.tracks
+        for segment in track.segments
+        if segment.points
+    ]
+    if track_paths:
+        return sum(_path_distance_km(path) for path in track_paths)
+
+    route_paths = [
+        [(float(point.latitude), float(point.longitude)) for point in route.points]
+        for route in gpx.routes
+        if route.points
+    ]
+    if route_paths:
+        return sum(_path_distance_km(path) for path in route_paths)
+
+    return _path_distance_km(fallback_path)
 
 
 def _format_timestamp(timestamp_seconds: Optional[float]) -> str:
@@ -437,6 +463,11 @@ def parse_gpx_upload_data(
     if len(point_records) < 3:
         raise ValueError(f"{filename} needs at least 3 GPX points for route analysis.")
 
+    if len(point_records) > MAX_WAYPOINT_TSP_TRACK_POINTS:
+        raise ValueError(
+            f"{filename} exceeds the {MAX_WAYPOINT_TSP_TRACK_POINTS:,}-point GPX limit."
+        )
+
     mission_points = detect_mission_points(point_records)
     display_path = simplify_transit_path(
         point_records,
@@ -451,7 +482,7 @@ def parse_gpx_upload_data(
         "original_path": original_path,
         "display_path": display_path,
         "mission_points": mission_points,
-        "original_distance_km": _path_distance_km(original_path),
+        "original_distance_km": _gpx_recorded_distance_km(gpx, original_path),
         "start_coord": original_path[0],
         "end_coord": original_path[-1],
         "timestamped_samples": sum(record["timestamp"] is not None for record in point_records),
@@ -994,6 +1025,8 @@ def extract_track_and_waypoint_records(
 @st.cache_data(show_spinner=False)
 def parse_gpx_spatial_upload_data(gpx_bytes: bytes, filename: str) -> dict[str, Any]:
     """Parse a GPX upload into dense track geometry and named visit waypoints."""
+    if len(gpx_bytes) > MAX_GPX_UPLOAD_BYTES:
+        raise ValueError(f"{filename} exceeds the 10 MiB GPX file limit.")
     if not gpx_bytes.strip():
         raise ValueError(f"{filename} is empty.")
 
@@ -1002,6 +1035,22 @@ def parse_gpx_spatial_upload_data(gpx_bytes: bytes, filename: str) -> dict[str, 
         raise ValueError(f"{filename} is empty.")
 
     gpx = gpxpy.parse(gpx_text)
+    track_point_count = sum(
+        len(segment.points)
+        for track in gpx.tracks
+        for segment in track.segments
+    )
+    route_point_count = sum(len(route.points) for route in gpx.routes)
+    point_count = track_point_count if track_point_count else route_point_count
+    if point_count > MAX_WAYPOINT_TSP_TRACK_POINTS:
+        raise ValueError(
+            f"{filename} exceeds the {MAX_WAYPOINT_TSP_TRACK_POINTS:,}-point GPX limit."
+        )
+    if len(gpx.waypoints) > MAX_WAYPOINT_TSP_WAYPOINTS:
+        raise ValueError(
+            f"{filename} has {len(gpx.waypoints):,} named waypoints; "
+            f"the limit is {MAX_WAYPOINT_TSP_WAYPOINTS}."
+        )
     track_records, waypoints, point_source = extract_track_and_waypoint_records(gpx)
 
     if len(track_records) < 2:
@@ -1024,7 +1073,7 @@ def parse_gpx_spatial_upload_data(gpx_bytes: bytes, filename: str) -> dict[str, 
         "track_records": track_records,
         "original_path": original_path,
         "waypoints": waypoints,
-        "original_distance_km": _path_distance_km(original_path),
+        "original_distance_km": _gpx_recorded_distance_km(gpx, original_path),
         "center": center,
         "timestamped_track_samples": sum(
             record["timestamp"] is not None for record in track_records
@@ -1557,8 +1606,9 @@ def integrate_tsp_feature() -> None:
     st.markdown(
         """
         <div class='glass-card'>
-            <p><b>Upload one GPX file with dense track points and named waypoints.</b></p>
+            <p><b>Upload up to 5 GPX files with track points and named waypoints.</b></p>
             <p style='margin-bottom: 0;'>
+                Each file is limited to 10 MiB, 25,000 track or route points, and 50 waypoints.
                 The map overlays the original track, the RDP simplified track, and an optimized route through the GPX placemarks using the selected routing engine.
             </p>
         </div>
@@ -1575,6 +1625,12 @@ def integrate_tsp_feature() -> None:
 
     if not uploaded_files:
         st.info("Upload one or more GPX files to solve each route with road-network TSP.")
+        return
+
+    if len(uploaded_files) > MAX_WAYPOINT_TSP_GPX_FILES:
+        st.error(
+            f"Upload at most {MAX_WAYPOINT_TSP_GPX_FILES} GPX files at a time."
+        )
         return
 
     if len(uploaded_files) == 1:

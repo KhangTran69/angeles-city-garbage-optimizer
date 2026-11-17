@@ -70,13 +70,13 @@ class RouteComparison:
             "baseline": self.baseline.to_dict() if self.baseline else None,
             "optimized": self.optimized.to_dict() if self.optimized else None,
             "local_knowledge": self.local_knowledge.to_dict() if self.local_knowledge else None,
-            "optimized_savings_km": round(self.optimized_savings_km, 3) if self.optimized_savings_km else None,
-            "optimized_savings_pct": round(self.optimized_savings_pct, 2) if self.optimized_savings_pct else None,
-            "local_knowledge_savings_km": round(self.local_knowledge_savings_km, 3) if self.local_knowledge_savings_km else None,
-            "local_knowledge_savings_pct": round(self.local_knowledge_savings_pct, 2) if self.local_knowledge_savings_pct else None,
+            "optimized_savings_km": round(self.optimized_savings_km, 3) if self.optimized_savings_km is not None else None,
+            "optimized_savings_pct": round(self.optimized_savings_pct, 2) if self.optimized_savings_pct is not None else None,
+            "local_knowledge_savings_km": round(self.local_knowledge_savings_km, 3) if self.local_knowledge_savings_km is not None else None,
+            "local_knowledge_savings_pct": round(self.local_knowledge_savings_pct, 2) if self.local_knowledge_savings_pct is not None else None,
             "efficiency_ranking": self.efficiency_ranking,
-            "deviation_score_optimized": round(self.deviation_score_optimized, 2) if self.deviation_score_optimized else None,
-            "deviation_score_local": round(self.deviation_score_local, 2) if self.deviation_score_local else None,
+            "deviation_score_optimized": round(self.deviation_score_optimized, 2) if self.deviation_score_optimized is not None else None,
+            "deviation_score_local": round(self.deviation_score_local, 2) if self.deviation_score_local is not None else None,
         }
 
 
@@ -175,10 +175,24 @@ def compute_route_metrics(
             estimated_co2_kg=0,
         )
     
-    # Calculate total distance
-    total_distance_km = 0.0
-    for i in range(1, len(polyline)):
-        total_distance_km += haversine(polyline[i-1], polyline[i])
+    # Sum only within recorded track segments. GPX segments and tracks can be
+    # separated by gaps that are not part of the driven route.
+    track_segments = [
+        [
+            (point.latitude, point.longitude)
+            for point in segment.points
+        ]
+        for track in gpx.tracks
+        for segment in track.segments
+        if segment.points
+    ]
+    if not track_segments:
+        track_segments = [polyline]
+    total_distance_km = sum(
+        haversine(segment_points[index - 1], segment_points[index])
+        for segment_points in track_segments
+        for index in range(1, len(segment_points))
+    )
     
     # Extract timestamps from GPX
     timestamps = []
@@ -204,13 +218,38 @@ def compute_route_metrics(
     if total_duration_minutes > 0:
         avg_speed_kmh = (total_distance_km / total_duration_minutes) * 60.0
     
-    # Count stops (points where speed is very low or time gap is large)
+    # Count sustained low-speed intervals within a segment. Long gaps and
+    # segment boundaries are not evidence that the vehicle remained stopped.
     num_stops = 0
-    if timestamps and len(timestamps) > 1:
-        for i in range(1, len(timestamps)):
-            time_gap = (timestamps[i] - timestamps[i-1]).total_seconds()
-            if time_gap > STOP_THRESHOLD_SECONDS:
-                num_stops += 1
+    for track in gpx.tracks:
+        for segment in track.segments:
+            stop_duration_seconds = 0.0
+            stop_counted = False
+            for previous, current in zip(segment.points, segment.points[1:]):
+                if previous.time is None or current.time is None:
+                    stop_duration_seconds = 0.0
+                    stop_counted = False
+                    continue
+
+                time_gap = (current.time - previous.time).total_seconds()
+                if time_gap <= 0 or time_gap > STOP_THRESHOLD_SECONDS:
+                    stop_duration_seconds = 0.0
+                    stop_counted = False
+                    continue
+
+                distance_km = haversine(
+                    (previous.latitude, previous.longitude),
+                    (current.latitude, current.longitude),
+                )
+                speed_kmh = distance_km * 3600 / time_gap
+                if speed_kmh < STOP_SPEED_THRESHOLD_KMH:
+                    stop_duration_seconds += time_gap
+                    if stop_duration_seconds >= STOP_THRESHOLD_SECONDS and not stop_counted:
+                        num_stops += 1
+                        stop_counted = True
+                else:
+                    stop_duration_seconds = 0.0
+                    stop_counted = False
     
     # Estimate fuel and CO2
     estimated_fuel_liters = total_distance_km * FUEL_PER_KM
