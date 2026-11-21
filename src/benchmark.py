@@ -10,6 +10,7 @@ import platform
 import statistics
 import subprocess
 import time
+import zipfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -50,13 +51,14 @@ def _scenario_fingerprint(
     seeds: list[int], vehicles: int, capacity_kg: int, population: int, generations: int,
     mutation_rate: float, crossover_rate: float, early_stopping_patience: int,
     early_stopping_min_delta: float, timeout_seconds: float | None,
+    distance_matrix: dict[str, Any],
 ) -> str:
     payload = {
         "scenario": scenario["name"], "multiplier": scenario["multiplier"],
         "rounding_rule": scenario["rounding_rule"],
         "waste_kg_by_barangay": scenario["waste_kg_by_barangay"],
         "selected_stops": selected_stops, "coordinates": coordinates, "depot": depot,
-        "distance_model": {"name": "Haversine", "earth_radius_km": 6371.0}, "seeds": seeds,
+        "distance_matrix": distance_matrix, "seeds": seeds,
         "vehicles": vehicles, "capacity_kg": capacity_kg, "population": population,
         "generations": generations, "mutation_rate": mutation_rate,
         "crossover_rate": crossover_rate, "early_stopping_patience": early_stopping_patience,
@@ -274,9 +276,8 @@ def _evaluation_case(
     }
 
 
-def _fixed_evaluation_cases(
-    distance_matrix: np.ndarray, point_to_index: dict[str, int],
-) -> dict[str, dict[str, Any]]:
+def _fixed_evaluation_cases() -> dict[str, dict[str, Any]]:
+    distance_matrix, point_to_index = _benchmark_distances()
     specifications = (
         ("capacity_constrained", ["Amsic", "Anunas"], {"Amsic": 1000, "Anunas": 1000}, 2, 1000, False),
         ("infeasible_demand", ["Amsic", "Anunas", "Balibago"], {"Amsic": 700, "Anunas": 700, "Balibago": 700}, 2, 1000, True),
@@ -299,6 +300,83 @@ def _benchmark_distances() -> tuple[np.ndarray, dict[str, int]]:
     point_to_index = {point: index for index, point in enumerate(points)}
     matrix = np.array([[haversine(coordinates[left], coordinates[right]) for right in points] for left in points], dtype=float)
     return matrix, point_to_index
+
+
+def _distance_matrix_identity(matrix: np.ndarray, labels: list[str]) -> str:
+    canonical_matrix = np.asarray(matrix, dtype=np.dtype("<f8"), order="C")
+    header = json.dumps(
+        {"labels": labels, "shape": list(canonical_matrix.shape), "units": "km"},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(header + b"\0")
+    digest.update(canonical_matrix.tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _resolve_distance_matrix(
+    matrix: np.ndarray | None, labels: list[str] | tuple[str, ...] | None,
+    source: str | None, distance_type: str | None,
+    attribution: str | None = None, license_name: str | None = None,
+) -> tuple[np.ndarray, dict[str, int], dict[str, Any]]:
+    if matrix is None:
+        if any(value is not None for value in (labels, source, distance_type, attribution, license_name)):
+            raise ValueError("distance metadata requires a distance matrix")
+        matrix, point_to_index = _benchmark_distances()
+        matrix_labels = [DEPOT, *BARANGAYS]
+        metadata: dict[str, Any] = {
+            "source": "built-in default coordinates", "type": "haversine",
+            "units": "km", "labels": matrix_labels,
+        }
+    else:
+        if labels is None or not source or not distance_type:
+            raise ValueError("an external matrix requires labels, distance_source, and distance_type")
+        matrix_labels = list(labels)
+        if any(not isinstance(label, str) or not label.strip() for label in matrix_labels):
+            raise ValueError("distance matrix labels must be non-empty strings")
+        if len(set(matrix_labels)) != len(matrix_labels):
+            raise ValueError("distance matrix labels must be unique")
+        missing = {DEPOT, *BARANGAYS}.difference(matrix_labels)
+        if missing:
+            raise ValueError(f"distance matrix is missing modeled points: {', '.join(sorted(missing))}")
+        matrix = np.asarray(matrix, dtype=float)
+        if matrix.shape != (len(matrix_labels), len(matrix_labels)):
+            raise ValueError("distance matrix must be square and match the number of labels")
+        if not np.isfinite(matrix).all() or (matrix < 0).any():
+            raise ValueError("distance matrix values must be finite and non-negative")
+        if not np.allclose(np.diag(matrix), 0.0, rtol=0.0, atol=1e-9):
+            raise ValueError("distance matrix diagonal must be zero")
+        point_to_index = {label: index for index, label in enumerate(matrix_labels)}
+        metadata = {
+            "source": source.strip(), "type": distance_type.strip(),
+            "units": "km", "labels": matrix_labels,
+        }
+        if attribution:
+            metadata["attribution"] = attribution.strip()
+        if license_name:
+            metadata["license"] = license_name.strip()
+        if not metadata["source"] or not metadata["type"]:
+            raise ValueError("distance_source and distance_type must be non-empty")
+    metadata["identity_sha256"] = _distance_matrix_identity(matrix, matrix_labels)
+    return matrix, point_to_index, metadata
+
+
+def _load_distance_matrix_npz(path: str | Path) -> tuple[np.ndarray, list[str]]:
+    """Load a numeric NPZ matrix bundle without enabling pickle deserialization."""
+    with np.load(path, allow_pickle=False) as bundle:
+        if set(bundle.files) != {"matrix", "labels"}:
+            raise ValueError("distance matrix NPZ must contain exactly 'matrix' and 'labels'")
+        matrix = np.asarray(bundle["matrix"], dtype=float)
+        labels = [str(label) for label in bundle["labels"].tolist()]
+    return matrix, labels
+
+
+def _distance_model_limitation(distance_type: str) -> str:
+    if distance_type == "haversine":
+        return "Haversine distances are straight-line estimates, not road distances."
+    if distance_type.startswith("osmnx_"):
+        return "The OSM-derived matrix comes from the identified cached graph and does not establish current road conditions or operational suitability."
+    return "The supplied distance matrix is not independently validated against field conditions or operational requirements."
 
 
 def _source_identity(output_path: str | Path | None = None) -> dict[str, Any]:
@@ -372,11 +450,22 @@ def _source_identity(output_path: str | Path | None = None) -> dict[str, Any]:
     return {"revision": revision, "dirty": dirty, "tree_sha256": digest.hexdigest()}
 
 
-def run_fixed_benchmark(timeout_seconds: float | None = None, *, source_output_path: str | Path | None = None) -> dict[str, Any]:
+def run_fixed_benchmark(
+    timeout_seconds: float | None = None, *, source_output_path: str | Path | None = None,
+    distance_matrix: np.ndarray | None = None,
+    distance_labels: list[str] | tuple[str, ...] | None = None,
+    distance_source: str | None = None,
+    distance_type: str | None = None,
+    distance_attribution: str | None = None,
+    distance_license: str | None = None,
+) -> dict[str, Any]:
     """Return scenario runs; an optional GA budget applies independently to each seed/scenario."""
     if timeout_seconds is not None and (not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
         raise ValueError("timeout_seconds must be positive and finite")
-    distance_matrix, point_to_index = _benchmark_distances()
+    distance_matrix, point_to_index, distance_provenance = _resolve_distance_matrix(
+        distance_matrix, distance_labels, distance_source, distance_type,
+        distance_attribution, distance_license,
+    )
     source = _source_identity(source_output_path)
     scenarios: dict[str, Any] = {}
     for scenario_name, multiplier in SCENARIO_MULTIPLIERS:
@@ -402,7 +491,7 @@ def run_fixed_benchmark(timeout_seconds: float | None = None, *, source_output_p
             runtime_seconds = time.perf_counter() - started
             feasibility = _route_feasibility(routes, waste)
             runs.append({
-                "seed": seed, "route_distance_km": round(float(total_distance), 2),
+                "seed": seed, "routes": routes, "route_distance_km": round(float(total_distance), 2),
                 "runtime_seconds": round(runtime_seconds, 6), "feasible": _is_feasible(feasibility),
                 "feasibility": feasibility, "timeout_seconds": timeout_seconds,
                 "timed_out": status.get("timed_out", False),
@@ -440,17 +529,29 @@ def run_fixed_benchmark(timeout_seconds: float | None = None, *, source_output_p
                 early_stopping_patience=EARLY_STOP_PATIENCE,
                 early_stopping_min_delta=EARLY_STOP_MIN_DELTA,
                 timeout_seconds=timeout_seconds,
+                distance_matrix=distance_provenance,
             ),
             "baseline": {"name": "capacity-aware greedy nearest-stop heuristic", "route_distance_km": round(float(baseline_distance), 2), "feasible": _is_feasible(baseline_feasibility), "feasibility": baseline_feasibility},
             "optimizer": optimizer,
         }
     base = scenarios["base"]
     return {
-        "schema_version": 3, "source": source,
+        "schema_version": 4, "source": source,
         "runtime_environment": _runtime_environment(),
         "benchmark": "fixed-seed GA vs. greedy baseline demand sensitivity",
-        "distance_model": "Haversine from built-in default coordinates; saved coordinate edits and live routing are ignored",
+        "distance_model": (
+            "Haversine from built-in default coordinates; saved coordinate edits and live routing are ignored"
+            if distance_provenance["type"] == "haversine"
+            else f"{distance_provenance['type']} distance matrix in km"
+        ),
+        "distance_matrix": distance_provenance,
         "data_note": "Bundled waste values are illustrative estimates, not validated operational measurements.",
+        "limitations": [
+            "The fixture uses six actual named barangays as an illustrative subset; waste demand is synthetic and illustrative, not measured field input.",
+            _distance_model_limitation(distance_provenance["type"]),
+            "The genetic algorithm is a heuristic and does not guarantee a globally optimal route plan.",
+            "These results do not establish municipal savings, city-wide route quality, or service performance.",
+        ],
         "configuration": {
             "selected_barangays": list(BENCHMARK_STOPS), "waste_kg_by_barangay": base["waste_kg_by_barangay"],
             "vehicles": BENCHMARK_VEHICLES, "vehicle_capacity_kg": BENCHMARK_CAPACITY_KG,
@@ -462,7 +563,7 @@ def run_fixed_benchmark(timeout_seconds: float | None = None, *, source_output_p
             "timeout_semantics": "The per-run deadline starts at invocation; setup before the first generation check and an active generation cannot be interrupted, so runtime may exceed the budget in either case. The best-so-far route is retained.",
         },
         "baseline": base["baseline"], "optimizer": base["optimizer"], "scenarios": scenarios,
-        "evaluation_cases": _fixed_evaluation_cases(distance_matrix, point_to_index),
+        "evaluation_cases": _fixed_evaluation_cases(),
     }
 
 
@@ -470,10 +571,35 @@ def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the fixed-input route sensitivity benchmark.")
     parser.add_argument("--json-out", help="Write the report to a JSON file; stdout is the default.")
     parser.add_argument("--timeout-seconds", type=float, help="Optional positive finite cooperative budget per scenario/seed GA run.")
+    parser.add_argument("--distance-matrix", help="Optional NPZ bundle containing `matrix` values in km and ordered `labels`.")
+    parser.add_argument("--distance-source", help="Required provenance description when --distance-matrix is supplied.")
+    parser.add_argument("--distance-type", help="Required distance model identifier when --distance-matrix is supplied.")
+    parser.add_argument("--distance-attribution", help="Optional source attribution recorded in the report.")
+    parser.add_argument("--distance-license", help="Optional source license recorded in the report.")
     args = parser.parse_args(argv)
     if args.timeout_seconds is not None and (not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0):
         parser.error("--timeout-seconds must be positive and finite")
-    rendered = json.dumps(run_fixed_benchmark(args.timeout_seconds, source_output_path=args.json_out), indent=2, sort_keys=True) + "\n"
+    distance_matrix = None
+    distance_labels = None
+    if args.distance_matrix:
+        if not args.distance_source or not args.distance_type:
+            parser.error("--distance-matrix requires --distance-source and --distance-type")
+        try:
+            distance_matrix, distance_labels = _load_distance_matrix_npz(args.distance_matrix)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+            parser.error(f"could not load --distance-matrix: {exc}")
+    elif any((args.distance_source, args.distance_type, args.distance_attribution, args.distance_license)):
+        parser.error("distance provenance options require --distance-matrix")
+    try:
+        report = run_fixed_benchmark(
+            args.timeout_seconds, source_output_path=args.json_out,
+            distance_matrix=distance_matrix, distance_labels=distance_labels,
+            distance_source=args.distance_source, distance_type=args.distance_type,
+            distance_attribution=args.distance_attribution, distance_license=args.distance_license,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.json_out:
         path = Path(args.json_out)
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -43,9 +44,12 @@ def test_scenarios_scale_values_round_half_up_without_mutating_defaults() -> Non
 
 def test_fingerprint_covers_all_settings_and_timeout() -> None:
     base = {"name": "base", "multiplier": 1.0, "rounding_rule": "nearest_integer_ties_up", "waste_kg_by_barangay": {"Amsic": 10}}
-    args = dict(selected_stops=["Amsic"], coordinates={"Amsic": [1.0, 2.0]}, depot=[0.0, 0.0], seeds=[42], vehicles=3, capacity_kg=10_000, population=20, generations=30, mutation_rate=0.05, crossover_rate=0.85, early_stopping_patience=30, early_stopping_min_delta=0.05, timeout_seconds=None)
+    matrix_identity = {"source": "synthetic test matrix", "type": "test", "units": "km", "labels": ["Depot", "Amsic"], "identity_sha256": "0" * 64}
+    args = dict(selected_stops=["Amsic"], coordinates={"Amsic": [1.0, 2.0]}, depot=[0.0, 0.0], seeds=[42], vehicles=3, capacity_kg=10_000, population=20, generations=30, mutation_rate=0.05, crossover_rate=0.85, early_stopping_patience=30, early_stopping_min_delta=0.05, timeout_seconds=None, distance_matrix=matrix_identity)
     fingerprint = _scenario_fingerprint(base, **args)
     assert fingerprint == _scenario_fingerprint(base, **args)
+    changed_matrix = dict(args, distance_matrix={**matrix_identity, "identity_sha256": "1" * 64})
+    assert _scenario_fingerprint(base, **changed_matrix) != fingerprint
     for setting, value in (("mutation_rate", 0.06), ("crossover_rate", 0.86), ("early_stopping_patience", 31), ("early_stopping_min_delta", 0.06), ("population", 21), ("generations", 31), ("vehicles", 4), ("capacity_kg", 9999), ("seeds", [43]), ("timeout_seconds", 1.0)):
         changed = dict(args)
         changed[setting] = value
@@ -67,7 +71,9 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
 
     monkeypatch.setattr(benchmark, "run_ga", recording_run_ga)
     report = run_fixed_benchmark(timeout_seconds=0.5)
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
+    assert report["distance_matrix"]["type"] == "haversine"
+    assert report["limitations"]
     revision = report["source"]["revision"]
     dirty = report["source"]["dirty"]
     if revision is None:
@@ -103,6 +109,8 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
         assert scenario["baseline"]["feasibility"]
         for seed, run in zip(BENCHMARK_SEEDS, scenario["optimizer"]["runs"], strict=True):
             assert run["seed"] == seed
+            assert len(run["routes"]) == BENCHMARK_VEHICLES
+            assert sorted(stop for route in run["routes"] for stop in route) == sorted(BENCHMARK_STOPS)
             assert run["route_distance_km"] >= 0
             assert run["runtime_seconds"] >= 0
             assert run["timeout_seconds"] == 0.5
@@ -110,6 +118,100 @@ def test_report_has_scenario_runs_and_source_identity(monkeypatch) -> None:
             assert "feasible" in run
         assert "feasibility_rate" in scenario["optimizer"]["summary"]
         assert "timeout_rate" in scenario["optimizer"]["summary"]
+
+
+def test_fixed_benchmark_uses_external_matrix_and_reports_provenance() -> None:
+    from src import benchmark
+
+    labels = [benchmark.DEPOT, *benchmark.BARANGAYS]
+    matrix = np.full((len(labels), len(labels)), 0.25)
+    np.fill_diagonal(matrix, 0.0)
+    report = run_fixed_benchmark(
+        distance_matrix=matrix, distance_labels=labels,
+        distance_source="deterministic synthetic test matrix", distance_type="synthetic_road_km",
+        distance_attribution="© example contributors", distance_license="ODbL",
+    )
+    assert report["distance_matrix"]["source"] == "deterministic synthetic test matrix"
+    assert report["distance_matrix"]["type"] == "synthetic_road_km"
+    assert report["distance_matrix"]["units"] == "km"
+    assert report["distance_matrix"]["attribution"] == "© example contributors"
+    assert report["distance_matrix"]["license"] == "ODbL"
+    assert len(report["distance_matrix"]["identity_sha256"]) == 64
+    assert report["distance_matrix"]["identity_sha256"] == benchmark._distance_matrix_identity(matrix, labels)
+    assert not any("OSM-derived" in item for item in report["limitations"])
+    for scenario in report["scenarios"].values():
+        assert scenario["baseline"]["route_distance_km"] < 3.0
+        assert all(run["route_distance_km"] < 3.0 for run in scenario["optimizer"]["runs"])
+        assert all(run["feasible"] for run in scenario["optimizer"]["runs"])
+
+
+def test_distance_model_limitations_match_matrix_provenance() -> None:
+    from src.benchmark import _distance_model_limitation
+
+    assert "Haversine" in _distance_model_limitation("haversine")
+    assert "OSM-derived" not in _distance_model_limitation("haversine")
+    assert "OSM-derived" in _distance_model_limitation("osmnx_drive_directed_shortest_path_km")
+    assert "OSM-derived" not in _distance_model_limitation("synthetic_road_km")
+
+
+@pytest.mark.parametrize("matrix,labels", [
+    (np.zeros((2, 2)), ["Depot", "Amsic"]),
+    (np.zeros((33, 33)), [data.DEPOT, *data.BARANGAYS[:-1]]),
+    (np.full((34, 34), np.nan), [data.DEPOT, *data.BARANGAYS]),
+])
+def test_external_matrix_rejects_incomplete_or_invalid_data(matrix, labels) -> None:
+    with pytest.raises(ValueError):
+        run_fixed_benchmark(
+            distance_matrix=matrix, distance_labels=labels,
+            distance_source="fixture", distance_type="test_road_km",
+        )
+
+
+def test_cli_loads_external_matrix_and_records_attribution(tmp_path) -> None:
+    labels = [data.DEPOT, *data.BARANGAYS]
+    matrix = np.full((len(labels), len(labels)), 0.25)
+    np.fill_diagonal(matrix, 0.0)
+    matrix_path = tmp_path / "matrix.npz"
+    report_path = tmp_path / "report.json"
+    np.savez_compressed(matrix_path, matrix=matrix, labels=np.asarray(labels, dtype=str))
+    result = subprocess.run([
+        sys.executable, "-m", "src.benchmark", "--distance-matrix", str(matrix_path),
+        "--distance-source", "fixture", "--distance-type", "test_road_km",
+        "--distance-attribution", "© example contributors", "--distance-license", "ODbL",
+        "--json-out", str(report_path),
+    ], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(report_path.read_text())
+    assert report["distance_matrix"]["source"] == "fixture"
+    assert report["distance_matrix"]["attribution"] == "© example contributors"
+    assert report["distance_matrix"]["license"] == "ODbL"
+    assert report["distance_matrix"]["identity_sha256"]
+    assert report["scenarios"]["base"]["baseline"]["route_distance_km"] < 3
+
+
+def test_cli_reports_corrupt_external_matrix_without_traceback(tmp_path) -> None:
+    matrix_path = tmp_path / "corrupt.npz"
+    labels = [data.DEPOT, *data.BARANGAYS]
+    matrix = np.zeros((len(labels), len(labels)))
+    np.savez_compressed(matrix_path, matrix=matrix, labels=np.asarray(labels, dtype=str))
+    damaged = bytearray(matrix_path.read_bytes())
+    central_directory_offset = damaged.find(b"PK\x01\x02")
+    assert central_directory_offset >= 0
+    damaged[central_directory_offset : central_directory_offset + 4] = b"NO\x01\x02"
+    matrix_path.write_bytes(damaged)
+
+    with pytest.raises(zipfile.BadZipFile, match="central directory"):
+        np.load(matrix_path, allow_pickle=False)
+
+    result = subprocess.run([
+        sys.executable, "-m", "src.benchmark", "--distance-matrix", str(matrix_path),
+        "--distance-source", "fixture", "--distance-type", "test_road_km",
+    ], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "could not load --distance-matrix" in result.stderr
+    assert "BadZipFile" not in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_report_runtime_environment_includes_reference_hardware(monkeypatch) -> None:
@@ -284,6 +386,26 @@ def test_report_includes_reproducible_capacity_and_input_outcomes() -> None:
     assert oversized["solver_result"]["feasible"] is False
 
 
+def test_evaluation_cases_remain_haversine_with_external_benchmark_matrix() -> None:
+    labels = [data.DEPOT, *data.BARANGAYS]
+    matrix = np.full((len(labels), len(labels)), 10.0)
+    np.fill_diagonal(matrix, 0.0)
+
+    haversine_case = run_fixed_benchmark()["evaluation_cases"]["capacity_constrained"]
+    external_matrix_report = run_fixed_benchmark(
+        distance_matrix=matrix,
+        distance_labels=labels,
+        distance_source="distinct test matrix",
+        distance_type="synthetic_test_km",
+    )
+    external_matrix_case = external_matrix_report["evaluation_cases"]["capacity_constrained"]
+
+    assert external_matrix_case["input"]["distance_model"] == "Haversine from built-in default coordinates"
+    assert external_matrix_case["solver_result"]["route_distance_km"] == (
+        haversine_case["solver_result"]["route_distance_km"]
+    )
+
+
 def test_tiny_cooperative_timeout_keeps_best_so_far_metrics() -> None:
     report = run_fixed_benchmark(timeout_seconds=1e-12)
     for scenario in report["scenarios"].values():
@@ -312,7 +434,7 @@ def test_cli_emits_json_with_timeout(tmp_path) -> None:
     result = subprocess.run([sys.executable, "-m", "src.benchmark", "--timeout-seconds", "0.5", "--json-out", str(output)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     report = json.loads(output.read_text())
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["evaluation_cases"]["capacity_constrained"]["outcome"] == "FEASIBLE_RESULT"
     assert report["evaluation_cases"]["invalid_input"]["outcome"] == "REJECTED_INVALID_INPUT"
     assert report["configuration"]["timeout_seconds_per_ga_run"] == 0.5
