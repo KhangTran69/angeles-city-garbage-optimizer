@@ -86,11 +86,31 @@ modules and the closest automated evidence for a change.
 
 Run `python -m src.benchmark` from the repository root to compare the capacity-aware greedy baseline with GA seeds 42–44 for three demand cases: the bundled base estimates and uniform -10% / +10% changes. The same six barangays (Amsic, Anunas, Balibago, Capaya, Claro M. Recto, and Cuayan), three vehicles, 10,000 kg capacity per vehicle, built-in default coordinates, Haversine distance matrix, population 20, 30 generations, mutation rate 0.05, and crossover rate 0.85 are used in every case. Positive kilogram values are rounded to the nearest integer, with half-kilogram ties rounded up. Scenario construction copies the source estimates and does not alter them.
 
-The schema-versioned JSON includes exact demand values, a canonical SHA-256 input fingerprint for each scenario, source Git revision / dirty state / source-tree SHA-256, Python and NumPy versions, and reference runtime details: OS name/release/version, CPU architecture, CPU family/model when available, and logical CPU count when available. It also includes greedy distance and feasibility, and each seed's GA distance, feasibility, runtime, and timeout status. The source-tree hash covers tracked and nonignored untracked project files, including documentation; it excludes common caches/build output, local `.env` files (except `.env.example`), and the exact `--json-out` file. Outside a usable Git worktree, it falls back to hashing project files with those exclusions. Summaries include feasibility rate, distance spread, mean runtime, and timeout rate. Runtime varies by machine and is reported for context, not as a performance guarantee. Use `--json-out report.json` to save the report.
+The schema-versioned JSON includes exact demand values, a canonical SHA-256 input fingerprint for each scenario, source Git revision / dirty state / source-tree SHA-256, Python and NumPy versions, and reference runtime details: OS name/release/version, CPU architecture, CPU family/model when available, and logical CPU count when available. It also includes greedy distance and feasibility, and each seed's complete route assignment, distance, feasibility, runtime, and timeout status. The source-tree hash covers tracked and nonignored untracked project files, including documentation; it excludes common caches/build output, local `.env` files (except `.env.example`), and the exact `--json-out` file. Outside a usable Git worktree, it falls back to hashing project files with those exclusions. Summaries include feasibility rate, distance spread, mean runtime, and timeout rate. Runtime varies by machine and is reported for context, not as a performance guarantee. Use `--json-out report.json` to save the report.
+
+To reproduce the retained OSM-backed six-stop fixture without making a map-service request, use `data/benchmark/optimizer-road-matrix.npz` with `--distance-matrix`. The report records the matrix identity, ordered labels, source graph SHA-256, model, attribution, and license; scenario fingerprints include that provenance. Example command:
+
+```bash
+python -m src.benchmark \
+  --distance-matrix data/benchmark/optimizer-road-matrix.npz \
+  --distance-source "data/angeles_city_network.graphml (SHA-256 613617d33044a9d7f7f160cd346cfbc5f69bdd3522b5506ee74903df3e5b068c); OSMnx 2.1.0 cached graph" \
+  --distance-type osmnx_drive_directed_shortest_path_km \
+  --distance-attribution "© OpenStreetMap contributors" \
+  --distance-license "Open Database License (ODbL) 1.0" \
+  --json-out /tmp/optimizer-m5-road-report.json
+```
+
+The matrix has 34 ordered locations (transfer-station depot plus barangays) and reuses a previously retrieved graph; this command does not fetch OSM data. OpenStreetMap data is © OpenStreetMap contributors and available under ODbL. The fixture uses six actual named barangays as an illustrative subset; its waste demand is synthetic and illustrative, not measured field input. This benchmark does not establish municipal savings, field route quality, or operational suitability.
+
+#### Baseline provenance reconciliation
+
+The retained matrix report's greedy baseline is **57.92 km**. It uses `data/angeles_city_network.graphml` (OSMnx 2.1.0; graph SHA-256 `613617d33044a9d7f7f160cd346cfbc5f69bdd3522b5506ee74903df3e5b068c`) and matrix identity SHA-256 `cf320f2b691e9424da668d6f4c9d931fc1d4e0c6941f15303a9aa353337b3c91`. Rebuilding the matrix locally from that graph exactly matched the retained matrix and identity.
+
+The historical **57.84 km** figure is from a separate 2026-11-14 live Overpass `drive` graph request via OSMnx 2.1.1, for bbox west 120.50, south 15.10, east 120.64, north 15.20; that run reported 10,030 nodes and 26,249 directed edges. Its temporary graph, matrix cache, and HTTP cache were deleted, and no graph SHA-256 or matrix identity was retained. It is an unretained single-run observation, not a result from the 57.92 km matrix, and is not included in the reproducible report. The report's later bounded Overpass attempt returned HTTP 406; it used the retained GraphML and made no retry.
 
 An optional `--timeout-seconds 5` sets a positive finite cooperative budget independently for each scenario/seed GA run. The per-run deadline starts at invocation; setup before the first generation check and an active generation cannot be interrupted, so runtime may exceed the budget in either case. The best-so-far route is retained and reported with its feasibility and timeout status. The timeout setting and early-stopping patience/minimum improvement are included in each scenario fingerprint.
 
-Schema version 3 also records four fixed evaluation cases: an exact-capacity feasible assignment, demand above fleet capacity, an invalid barangay name, and a stop above per-vehicle capacity. Each case includes its complete input (demand, fleet, Haversine model, selected-stop coordinates, and depot), solver settings, outcome, and SHA-256 input fingerprint. These cases use seed 42, population 4, two generations, and no timeout. Valid cases record input-validation reasons/details separately from solver feasibility, route loads, distance, and runtime; invalid input records the pre-solver validation error and validation runtime with no solver result. A valid but infeasible request rejected by its settings is recorded as `INFEASIBLE_INPUT`, with its reason/details and no solver result. Solver errors are allowed to surface instead of being labeled invalid input. Diagnostic cases contain no dispatch route assignment and do not change the app's Dispatch ZIP guard.
+The report also records four fixed evaluation cases: an exact-capacity feasible assignment, demand above fleet capacity, an invalid barangay name, and a stop above per-vehicle capacity. Each case includes its complete input (demand, fleet, Haversine model, selected-stop coordinates, and depot), solver settings, outcome, and SHA-256 input fingerprint. These cases use seed 42, population 4, two generations, and no timeout. Valid cases record input-validation reasons/details separately from solver feasibility, route loads, distance, and runtime; invalid input records the pre-solver validation error and validation runtime with no solver result. A valid but infeasible request rejected by its settings is recorded as `INFEASIBLE_INPUT`, with its reason/details and no solver result. Solver errors are allowed to surface instead of being labeled invalid input. Diagnostic cases contain no dispatch route assignment and do not change the app's Dispatch ZIP guard.
 
 Waste estimates are illustrative, not validated municipal measurements. Haversine distances are straight-line estimates, not road distances. This report measures algorithm sensitivity on the specified inputs; it is not operational or field validation.
 
@@ -123,6 +143,7 @@ A request is infeasible when any selected barangay's estimated load exceeds one 
 ## Data Sources
 
 - **Road network**: OpenStreetMap via OSMnx
+- **Retained benchmark matrix**: `data/benchmark/optimizer-road-matrix.npz`, derived from the recorded OSMnx graph; © OpenStreetMap contributors, Open Database License (ODbL) 1.0
 - **Barangay coordinates**: Bundled JSON file editable from the app
 - **Waste estimates**: Illustrative daily collection volumes for research/demo use
 - **Diesel price**: DOE Region 3 reference
