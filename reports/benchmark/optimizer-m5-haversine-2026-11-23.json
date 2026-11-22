@@ -1,0 +1,878 @@
+{
+  "baseline": {
+    "feasibility": {
+      "all_routes_within_capacity": true,
+      "all_selected_stops_once": true,
+      "route_count": 3
+    },
+    "feasible": true,
+    "name": "capacity-aware greedy nearest-stop heuristic",
+    "route_distance_km": 48.44
+  },
+  "benchmark": "fixed-seed GA vs. greedy baseline demand sensitivity",
+  "configuration": {
+    "crossover_rate": 0.85,
+    "early_stopping_min_delta": 0.05,
+    "early_stopping_patience": 30,
+    "generations": 30,
+    "mutation_rate": 0.05,
+    "population": 20,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "selected_barangays": [
+      "Amsic",
+      "Anunas",
+      "Balibago",
+      "Capaya",
+      "Claro M. Recto",
+      "Cuayan"
+    ],
+    "timeout_seconds_per_ga_run": null,
+    "timeout_semantics": "The per-run deadline starts at invocation; setup before the first generation check and an active generation cannot be interrupted, so runtime may exceed the budget in either case. The best-so-far route is retained.",
+    "vehicle_capacity_kg": 10000,
+    "vehicles": 3,
+    "waste_kg_by_barangay": {
+      "Amsic": 3300,
+      "Anunas": 2590,
+      "Balibago": 6470,
+      "Capaya": 2060,
+      "Claro M. Recto": 2430,
+      "Cuayan": 1770
+    }
+  },
+  "data_note": "Bundled waste values are illustrative estimates, not validated operational measurements.",
+  "distance_matrix": {
+    "identity_sha256": "08c692e58bbcda2d4414056c337f976544bc6d9023270bcd3fdc8c765cfa4dc3",
+    "labels": [
+      "Angeles City Transfer Station",
+      "Agapito del Rosario",
+      "Amsic",
+      "Anunas",
+      "Balibago",
+      "Capaya",
+      "Claro M. Recto",
+      "Cuayan",
+      "Cutcut",
+      "Cutud",
+      "Lourdes North West",
+      "Lourdes Sur (Talimundoc)",
+      "Lourdes Sur East",
+      "Malaba\u00f1as",
+      "Margot",
+      "Marisol (Ninoy Aquino)",
+      "Mining",
+      "Pampang (Santo Ni\u00f1o)",
+      "Pandan",
+      "Pulung Bulu",
+      "Pulung Cacutud",
+      "Pulung Maragul",
+      "Salapungan",
+      "San Jos\u00e9",
+      "San Nicolas",
+      "Santa Teresita",
+      "Santa Trinidad",
+      "Santo Cristo",
+      "Santo Domingo",
+      "Santo Rosario (Poblaci\u00f3n)",
+      "Sapalibutad",
+      "Sapangbato",
+      "Tabun",
+      "Virgen Delos Remedios"
+    ],
+    "source": "built-in default coordinates",
+    "type": "haversine",
+    "units": "km"
+  },
+  "distance_model": "Haversine from built-in default coordinates; saved coordinate edits and live routing are ignored",
+  "evaluation_cases": {
+    "capacity_constrained": {
+      "configuration": {
+        "allow_infeasible": false,
+        "crossover_rate": 0.85,
+        "early_stopping_min_delta": 0.05,
+        "early_stopping_patience": 30,
+        "generations": 2,
+        "mutation_rate": 0.05,
+        "population": 4,
+        "seed": 42,
+        "timeout_seconds": null
+      },
+      "input": {
+        "coordinates": {
+          "Amsic": [
+            15.15585270907212,
+            120.5711102229492
+          ],
+          "Anunas": [
+            15.155761613285806,
+            120.55345285759914
+          ]
+        },
+        "depot": {
+          "coordinates": [
+            15.14141069995556,
+            120.62967669596279
+          ],
+          "name": "Angeles City Transfer Station"
+        },
+        "distance_model": "Haversine from built-in default coordinates",
+        "selected_barangays": [
+          "Amsic",
+          "Anunas"
+        ],
+        "vehicle_capacity_kg": 1000,
+        "vehicles": 2,
+        "waste_kg_by_barangay": {
+          "Amsic": 1000,
+          "Anunas": 1000
+        }
+      },
+      "input_fingerprint": "77764edff8ee9267d0ea65d3757af399fc6038f27838f1cf32376653641cf11b",
+      "input_validation": {
+        "details": {},
+        "feasible": true,
+        "reason_codes": [],
+        "valid": true
+      },
+      "outcome": "FEASIBLE_RESULT",
+      "solver_result": {
+        "feasible": true,
+        "overloaded_routes": [],
+        "reason_codes": [],
+        "route_count": 2,
+        "route_distance_km": 29.65,
+        "route_loads_kg": [
+          1000.0,
+          1000.0
+        ],
+        "runtime_seconds": 0.000169
+      }
+    },
+    "infeasible_demand": {
+      "configuration": {
+        "allow_infeasible": true,
+        "crossover_rate": 0.85,
+        "early_stopping_min_delta": 0.05,
+        "early_stopping_patience": 30,
+        "generations": 2,
+        "mutation_rate": 0.05,
+        "population": 4,
+        "seed": 42,
+        "timeout_seconds": null
+      },
+      "input": {
+        "coordinates": {
+          "Amsic": [
+            15.15585270907212,
+            120.5711102229492
+          ],
+          "Anunas": [
+            15.155761613285806,
+            120.55345285759914
+          ],
+          "Balibago": [
+            15.166482078071924,
+            120.59090982479879
+          ]
+        },
+        "depot": {
+          "coordinates": [
+            15.14141069995556,
+            120.62967669596279
+          ],
+          "name": "Angeles City Transfer Station"
+        },
+        "distance_model": "Haversine from built-in default coordinates",
+        "selected_barangays": [
+          "Amsic",
+          "Anunas",
+          "Balibago"
+        ],
+        "vehicle_capacity_kg": 1000,
+        "vehicles": 2,
+        "waste_kg_by_barangay": {
+          "Amsic": 700,
+          "Anunas": 700,
+          "Balibago": 700
+        }
+      },
+      "input_fingerprint": "69a3de2aed16d939a307547f587c8d83af9ed801ae47b139423a04eb86892cc9",
+      "input_validation": {
+        "details": {
+          "fleet_capacity_kg": 2000.0,
+          "oversized_stops": [],
+          "total_demand_kg": 2100.0,
+          "vehicle_capacity_kg": 1000
+        },
+        "feasible": false,
+        "reason_codes": [
+          "total_demand_exceeds_fleet_capacity"
+        ],
+        "valid": true
+      },
+      "outcome": "INFEASIBLE_DIAGNOSTIC",
+      "solver_result": {
+        "feasible": false,
+        "overloaded_routes": [
+          {
+            "load_kg": 1400.0,
+            "vehicle": 2
+          }
+        ],
+        "reason_codes": [
+          "route_exceeds_vehicle_capacity"
+        ],
+        "route_count": 2,
+        "route_distance_km": 26.74,
+        "route_loads_kg": [
+          700.0,
+          1400.0
+        ],
+        "runtime_seconds": 0.000134
+      }
+    },
+    "invalid_input": {
+      "configuration": {
+        "allow_infeasible": false,
+        "crossover_rate": 0.85,
+        "early_stopping_min_delta": 0.05,
+        "early_stopping_patience": 30,
+        "generations": 2,
+        "mutation_rate": 0.05,
+        "population": 4,
+        "seed": 42,
+        "timeout_seconds": null
+      },
+      "input": {
+        "coordinates": {},
+        "depot": {
+          "coordinates": [
+            15.14141069995556,
+            120.62967669596279
+          ],
+          "name": "Angeles City Transfer Station"
+        },
+        "distance_model": "Haversine from built-in default coordinates",
+        "selected_barangays": [
+          "Unknown Zone"
+        ],
+        "vehicle_capacity_kg": 1000,
+        "vehicles": 1,
+        "waste_kg_by_barangay": {
+          "Unknown Zone": 100
+        }
+      },
+      "input_fingerprint": "ee45c17a587350f6fc80fff82209b1855b835e8c12ee70d3519e7fe460d66ff1",
+      "input_validation": {
+        "details": {},
+        "error": {
+          "message": "unknown barangay name(s): Unknown Zone",
+          "type": "ValueError"
+        },
+        "feasible": null,
+        "reason_codes": [],
+        "valid": false
+      },
+      "outcome": "REJECTED_INVALID_INPUT",
+      "solver_result": null,
+      "validation_runtime_seconds": 7e-06
+    },
+    "oversized_stop": {
+      "configuration": {
+        "allow_infeasible": true,
+        "crossover_rate": 0.85,
+        "early_stopping_min_delta": 0.05,
+        "early_stopping_patience": 30,
+        "generations": 2,
+        "mutation_rate": 0.05,
+        "population": 4,
+        "seed": 42,
+        "timeout_seconds": null
+      },
+      "input": {
+        "coordinates": {
+          "Amsic": [
+            15.15585270907212,
+            120.5711102229492
+          ]
+        },
+        "depot": {
+          "coordinates": [
+            15.14141069995556,
+            120.62967669596279
+          ],
+          "name": "Angeles City Transfer Station"
+        },
+        "distance_model": "Haversine from built-in default coordinates",
+        "selected_barangays": [
+          "Amsic"
+        ],
+        "vehicle_capacity_kg": 1000,
+        "vehicles": 1,
+        "waste_kg_by_barangay": {
+          "Amsic": 1001
+        }
+      },
+      "input_fingerprint": "218c89a874e0b896aeaa8981c1a59dadc02a12775b4cfe18e888dc932970074f",
+      "input_validation": {
+        "details": {
+          "fleet_capacity_kg": 1000.0,
+          "oversized_stops": [
+            {
+              "barangay": "Amsic",
+              "waste_kg": 1001.0
+            }
+          ],
+          "total_demand_kg": 1001.0,
+          "vehicle_capacity_kg": 1000
+        },
+        "feasible": false,
+        "reason_codes": [
+          "stop_exceeds_vehicle_capacity",
+          "total_demand_exceeds_fleet_capacity"
+        ],
+        "valid": true
+      },
+      "outcome": "INFEASIBLE_DIAGNOSTIC",
+      "solver_result": {
+        "feasible": false,
+        "overloaded_routes": [
+          {
+            "load_kg": 1001.0,
+            "vehicle": 1
+          }
+        ],
+        "reason_codes": [
+          "route_exceeds_vehicle_capacity"
+        ],
+        "route_count": 1,
+        "route_distance_km": 12.98,
+        "route_loads_kg": [
+          1001.0
+        ],
+        "runtime_seconds": 8.6e-05
+      }
+    }
+  },
+  "limitations": [
+    "The fixture uses six actual named barangays as an illustrative subset; waste demand is synthetic and illustrative, not measured field input.",
+    "Haversine distances are straight-line estimates, not road distances.",
+    "The genetic algorithm is a heuristic and does not guarantee a globally optimal route plan.",
+    "These results do not establish municipal savings, city-wide route quality, or service performance."
+  ],
+  "optimizer": {
+    "all_runs_feasible": true,
+    "best_route_distance_km": 36.32,
+    "distance_range_km": [
+      36.32,
+      41.21
+    ],
+    "distance_stddev_km": 2.31,
+    "mean_route_distance_km": 37.95,
+    "mean_runtime_seconds": 0.001683,
+    "name": "genetic algorithm with capacity-aware decoding and 2-opt",
+    "runs": [
+      {
+        "feasibility": {
+          "all_routes_within_capacity": true,
+          "all_selected_stops_once": true,
+          "route_count": 3
+        },
+        "feasible": true,
+        "route_distance_km": 41.21,
+        "routes": [
+          [
+            "Amsic",
+            "Claro M. Recto"
+          ],
+          [
+            "Anunas",
+            "Cuayan",
+            "Capaya"
+          ],
+          [
+            "Balibago"
+          ]
+        ],
+        "runtime_seconds": 0.001644,
+        "seed": 42,
+        "timed_out": false,
+        "timeout_seconds": null
+      },
+      {
+        "feasibility": {
+          "all_routes_within_capacity": true,
+          "all_selected_stops_once": true,
+          "route_count": 3
+        },
+        "feasible": true,
+        "route_distance_km": 36.32,
+        "routes": [
+          [
+            "Capaya",
+            "Claro M. Recto"
+          ],
+          [
+            "Balibago"
+          ],
+          [
+            "Cuayan",
+            "Anunas",
+            "Amsic"
+          ]
+        ],
+        "runtime_seconds": 0.001734,
+        "seed": 43,
+        "timed_out": false,
+        "timeout_seconds": null
+      },
+      {
+        "feasibility": {
+          "all_routes_within_capacity": true,
+          "all_selected_stops_once": true,
+          "route_count": 3
+        },
+        "feasible": true,
+        "route_distance_km": 36.32,
+        "routes": [
+          [
+            "Claro M. Recto",
+            "Capaya"
+          ],
+          [
+            "Balibago"
+          ],
+          [
+            "Cuayan",
+            "Anunas",
+            "Amsic"
+          ]
+        ],
+        "runtime_seconds": 0.001672,
+        "seed": 44,
+        "timed_out": false,
+        "timeout_seconds": null
+      }
+    ],
+    "summary": {
+      "distance_range_km": [
+        36.32,
+        41.21
+      ],
+      "feasibility_rate": 1.0,
+      "mean_distance_km": 37.95,
+      "mean_runtime_seconds": 0.001683,
+      "timeout_rate": 0.0
+    }
+  },
+  "runtime_environment": {
+    "architecture": "arm64",
+    "cpu_family": "Apple M2",
+    "logical_cpu_count": 8,
+    "numpy": "2.4.4",
+    "operating_system": {
+      "name": "Darwin",
+      "release": "27.2.0",
+      "version": "Darwin Kernel Version 27.2.0: Wed Oct 14 23:48:16 PDT 2026; root:xnu-13432.41.4~25/RELEASE_ARM64_T8112"
+    },
+    "python": "3.14.3"
+  },
+  "scenarios": {
+    "base": {
+      "baseline": {
+        "feasibility": {
+          "all_routes_within_capacity": true,
+          "all_selected_stops_once": true,
+          "route_count": 3
+        },
+        "feasible": true,
+        "name": "capacity-aware greedy nearest-stop heuristic",
+        "route_distance_km": 48.44
+      },
+      "input_fingerprint": "f3e490b1594359ad7355afcb713013881129e0d44875ad58dce2669a11406826",
+      "multiplier": 1.0,
+      "name": "base",
+      "optimizer": {
+        "all_runs_feasible": true,
+        "best_route_distance_km": 36.32,
+        "distance_range_km": [
+          36.32,
+          41.21
+        ],
+        "distance_stddev_km": 2.31,
+        "mean_route_distance_km": 37.95,
+        "mean_runtime_seconds": 0.001683,
+        "name": "genetic algorithm with capacity-aware decoding and 2-opt",
+        "runs": [
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 41.21,
+            "routes": [
+              [
+                "Amsic",
+                "Claro M. Recto"
+              ],
+              [
+                "Anunas",
+                "Cuayan",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ]
+            ],
+            "runtime_seconds": 0.001644,
+            "seed": 42,
+            "timed_out": false,
+            "timeout_seconds": null
+          },
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 36.32,
+            "routes": [
+              [
+                "Capaya",
+                "Claro M. Recto"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Amsic"
+              ]
+            ],
+            "runtime_seconds": 0.001734,
+            "seed": 43,
+            "timed_out": false,
+            "timeout_seconds": null
+          },
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 36.32,
+            "routes": [
+              [
+                "Claro M. Recto",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Amsic"
+              ]
+            ],
+            "runtime_seconds": 0.001672,
+            "seed": 44,
+            "timed_out": false,
+            "timeout_seconds": null
+          }
+        ],
+        "summary": {
+          "distance_range_km": [
+            36.32,
+            41.21
+          ],
+          "feasibility_rate": 1.0,
+          "mean_distance_km": 37.95,
+          "mean_runtime_seconds": 0.001683,
+          "timeout_rate": 0.0
+        }
+      },
+      "rounding_rule": "nearest_integer_ties_up",
+      "waste_kg_by_barangay": {
+        "Amsic": 3300,
+        "Anunas": 2590,
+        "Balibago": 6470,
+        "Capaya": 2060,
+        "Claro M. Recto": 2430,
+        "Cuayan": 1770
+      }
+    },
+    "minus_10_percent": {
+      "baseline": {
+        "feasibility": {
+          "all_routes_within_capacity": true,
+          "all_selected_stops_once": true,
+          "route_count": 3
+        },
+        "feasible": true,
+        "name": "capacity-aware greedy nearest-stop heuristic",
+        "route_distance_km": 48.44
+      },
+      "input_fingerprint": "25acc7cab84361fef8695c1a3baec163fd3e60f97c5bb63d760856a004b461dc",
+      "multiplier": 0.9,
+      "name": "minus_10_percent",
+      "optimizer": {
+        "all_runs_feasible": true,
+        "best_route_distance_km": 36.32,
+        "distance_range_km": [
+          36.32,
+          41.21
+        ],
+        "distance_stddev_km": 2.31,
+        "mean_route_distance_km": 37.95,
+        "mean_runtime_seconds": 0.00203,
+        "name": "genetic algorithm with capacity-aware decoding and 2-opt",
+        "runs": [
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 41.21,
+            "routes": [
+              [
+                "Amsic",
+                "Claro M. Recto"
+              ],
+              [
+                "Anunas",
+                "Cuayan",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ]
+            ],
+            "runtime_seconds": 0.00172,
+            "seed": 42,
+            "timed_out": false,
+            "timeout_seconds": null
+          },
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 36.32,
+            "routes": [
+              [
+                "Capaya",
+                "Claro M. Recto"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Amsic"
+              ]
+            ],
+            "runtime_seconds": 0.002259,
+            "seed": 43,
+            "timed_out": false,
+            "timeout_seconds": null
+          },
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 36.32,
+            "routes": [
+              [
+                "Claro M. Recto",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Amsic"
+              ]
+            ],
+            "runtime_seconds": 0.002111,
+            "seed": 44,
+            "timed_out": false,
+            "timeout_seconds": null
+          }
+        ],
+        "summary": {
+          "distance_range_km": [
+            36.32,
+            41.21
+          ],
+          "feasibility_rate": 1.0,
+          "mean_distance_km": 37.95,
+          "mean_runtime_seconds": 0.00203,
+          "timeout_rate": 0.0
+        }
+      },
+      "rounding_rule": "nearest_integer_ties_up",
+      "waste_kg_by_barangay": {
+        "Amsic": 2970,
+        "Anunas": 2331,
+        "Balibago": 5823,
+        "Capaya": 1854,
+        "Claro M. Recto": 2187,
+        "Cuayan": 1593
+      }
+    },
+    "plus_10_percent": {
+      "baseline": {
+        "feasibility": {
+          "all_routes_within_capacity": true,
+          "all_selected_stops_once": true,
+          "route_count": 3
+        },
+        "feasible": true,
+        "name": "capacity-aware greedy nearest-stop heuristic",
+        "route_distance_km": 48.44
+      },
+      "input_fingerprint": "ac9f26060cf6ec53cdf4a7d9ba87f0ecd09358aab2b37d4e8eec052278436465",
+      "multiplier": 1.1,
+      "name": "plus_10_percent",
+      "optimizer": {
+        "all_runs_feasible": true,
+        "best_route_distance_km": 36.32,
+        "distance_range_km": [
+          36.32,
+          41.19
+        ],
+        "distance_stddev_km": 2.3,
+        "mean_route_distance_km": 37.94,
+        "mean_runtime_seconds": 0.001703,
+        "name": "genetic algorithm with capacity-aware decoding and 2-opt",
+        "runs": [
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 41.19,
+            "routes": [
+              [
+                "Amsic",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Claro M. Recto"
+              ]
+            ],
+            "runtime_seconds": 0.001623,
+            "seed": 42,
+            "timed_out": false,
+            "timeout_seconds": null
+          },
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 36.32,
+            "routes": [
+              [
+                "Claro M. Recto",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Amsic"
+              ]
+            ],
+            "runtime_seconds": 0.001788,
+            "seed": 43,
+            "timed_out": false,
+            "timeout_seconds": null
+          },
+          {
+            "feasibility": {
+              "all_routes_within_capacity": true,
+              "all_selected_stops_once": true,
+              "route_count": 3
+            },
+            "feasible": true,
+            "route_distance_km": 36.32,
+            "routes": [
+              [
+                "Claro M. Recto",
+                "Capaya"
+              ],
+              [
+                "Balibago"
+              ],
+              [
+                "Cuayan",
+                "Anunas",
+                "Amsic"
+              ]
+            ],
+            "runtime_seconds": 0.001697,
+            "seed": 44,
+            "timed_out": false,
+            "timeout_seconds": null
+          }
+        ],
+        "summary": {
+          "distance_range_km": [
+            36.32,
+            41.19
+          ],
+          "feasibility_rate": 1.0,
+          "mean_distance_km": 37.94,
+          "mean_runtime_seconds": 0.001703,
+          "timeout_rate": 0.0
+        }
+      },
+      "rounding_rule": "nearest_integer_ties_up",
+      "waste_kg_by_barangay": {
+        "Amsic": 3630,
+        "Anunas": 2849,
+        "Balibago": 7117,
+        "Capaya": 2266,
+        "Claro M. Recto": 2673,
+        "Cuayan": 1947
+      }
+    }
+  },
+  "schema_version": 4,
+  "source": {
+    "dirty": false,
+    "revision": "6e20d8bc4cf284a6a12c19224da974b2298ea6a6",
+    "tree_sha256": "0e0a7151bf32170b86a0deae1641104bbacd1298a2d4c0a0fe29862c4391320a"
+  }
+}
