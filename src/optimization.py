@@ -485,22 +485,18 @@ def run_ga(
     rng = random.Random(random_seed)
     fitness_cache: Dict[Tuple[int, ...], float] = {}
     
-    # 1. PRE-CALCULATE ALL MAPPINGS (Massive Performance Gain)
-    # Convert matrix to native Python list-of-lists (faster for individual access than NumPy)
-    dist_list = distance_matrix.tolist() if distance_matrix is not None else None
-    if dist_list is None:
-        # Emergency recovery: Build a haversine list if no matrix is available
-        points = [DEPOT] + BARANGAYS
+    # Use the distance matrix's indices for both chromosome stops and waste.
+    if distance_matrix is None:
+        name_to_id = _build_point_index()
+        points = list(name_to_id)
         dist_list = [[haversine(get_coord(p1), get_coord(p2)) for p2 in points] for p1 in points]
-        pt_idx = {p: i for i, p in enumerate(points)}
     else:
-        pt_idx = point_to_index if point_to_index else {}
-        
-    depot_idx = pt_idx.get(DEPOT, 0)
-    # Global index maps for selected barangays
-    id_to_name = {i: name for i, name in enumerate([DEPOT] + BARANGAYS)}
-    name_to_id = {name: i for i, name in id_to_name.items()}
-    waste_list = [w_dict.get(id_to_name[i], 0) for i in range(len(id_to_name))]
+        name_to_id = point_to_index or _build_point_index()
+        dist_list = distance_matrix.tolist()
+
+    depot_idx = name_to_id.get(DEPOT, 0)
+    id_to_name = {index: name for name, index in name_to_id.items()}
+    waste_list = [w_dict.get(id_to_name.get(index, ""), 0) for index in range(len(dist_list))]
     
     selected_indices = [name_to_id[b] for b in selected_barangays]
 
