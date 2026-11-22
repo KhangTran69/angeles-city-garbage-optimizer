@@ -102,6 +102,10 @@ python -m src.benchmark \
 
 The matrix has 34 ordered locations (transfer-station depot plus barangays) and reuses a previously retrieved graph; this command does not fetch OSM data. OpenStreetMap data is © OpenStreetMap contributors and available under ODbL. The fixture uses six actual named barangays as an illustrative subset; its waste demand is synthetic and illustrative, not measured field input. This benchmark does not establish municipal savings, field route quality, or operational suitability.
 
+#### Retained benchmark snapshots (2026-11-23)
+
+The checked-in [Haversine report](reports/benchmark/optimizer-m5-haversine-2026-11-23.json) and [OSM-matrix report](reports/benchmark/optimizer-m5-osm-matrix-2026-11-23.json) were generated from a clean checkout at revision `6e20d8bc4cf284a6a12c19224da974b2298ea6a6`. Each schema-v4 report retains three demand scenarios, seeds 42–44 for each scenario, and four evaluation cases. All nine GA runs in each report were feasible and did not time out. The reports record their own inputs, fingerprints, settings, provenance, and machine-specific runtimes; the OSM report also records the retained matrix attribution and license. These are reproducibility snapshots for illustrative inputs, not measured waste data or evidence of municipal savings, field route quality, or operational suitability.
+
 #### Baseline provenance reconciliation
 
 The retained matrix report's greedy baseline is **57.92 km**. It uses `data/angeles_city_network.graphml` (OSMnx 2.1.0; graph SHA-256 `613617d33044a9d7f7f160cd346cfbc5f69bdd3522b5506ee74903df3e5b068c`) and matrix identity SHA-256 `cf320f2b691e9424da668d6f4c9d931fc1d4e0c6941f15303a9aa353337b3c91`. Rebuilding the matrix locally from that graph exactly matched the retained matrix and identity.
