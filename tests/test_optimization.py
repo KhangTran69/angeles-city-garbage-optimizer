@@ -150,6 +150,33 @@ def test_run_ga_preserves_empty_waste_mapping_default_fallback():
     assert routes == [["Amsic"]]
 
 
+def test_run_ga_uses_matrix_label_order_for_directed_distances():
+    selected = ["Amsic", "Anunas"]
+    labels = list(optimization_module._build_point_index())
+    first, second = (labels.index(stop) for stop in selected)
+    matrix = np.full((len(labels), len(labels)), 9.0)
+    np.fill_diagonal(matrix, 0.0)
+    matrix[0, first] = matrix[first, second] = matrix[second, 0] = 1.0
+    order = list(range(len(labels)))
+    order[first], order[second] = order[second], order[first]
+    shuffled = matrix[np.ix_(order, order)]
+    index = {labels[original]: position for position, original in enumerate(order)}
+
+    routes, distances, total, _ = run_ga(
+        selected, 1, 2, 1, 0.0, 0.0,
+        vehicle_capacity_kg=200,
+        waste_dict={stop: 100 for stop in selected},
+        distance_matrix=shuffled,
+        point_to_index=index,
+        random_seed=42,
+        seed_chromosomes=[selected, selected[::-1]],
+    )
+
+    assert routes == [selected]
+    assert distances == [3.0]
+    assert total == 3.0
+
+
 @pytest.mark.parametrize(
     ("selected", "waste", "message"),
     [
